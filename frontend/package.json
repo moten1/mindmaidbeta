@@ -5,7 +5,8 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
-    "test": "react-scripts test --watchAll=false"
+    "test": "react-scripts test --watchAll=false",
+    "serve": "serve -s build" 
   },
   "dependencies": {
     "react": "^18.2.0",
