@@ -9,6 +9,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: 18
 
   - type: web
     name: mindmaid-frontend
@@ -16,7 +18,7 @@ services:
     rootDir: frontend
     plan: free
     buildCommand: "npm install && npm run build"
-    staticPublishPath: frontend/build
+    staticPublishPath: build
     envVars:
       - key: REACT_APP_API_URL
         value: https://mindmaid-backend.onrender.com/api
