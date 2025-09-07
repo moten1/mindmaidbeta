@@ -2,7 +2,6 @@
   "name": "mindmaid-frontend",
   "version": "1.0.0",
   "private": true,
-  "homepage": ".",
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
@@ -13,7 +12,9 @@
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "react-scripts": "5.0.1",
-    "axios": "1.4.0",
+    "axios": "1.4.0"
+  },
+  "devDependencies": {
     "serve": "14.2.0"
   },
   "browserslist": {
