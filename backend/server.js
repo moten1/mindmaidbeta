@@ -1,14 +1,13 @@
 // Load environment variables
 require('dotenv').config();
-
-// Core dependencies
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const path = require('path');
-const morgan = require('morgan'); // for HTTP request logging
+const morgan = require('morgan');
 
-// Import routes
+// Routes
 const wardrobeRoutes = require('./routes/wardrobe');
 const spotifyRoutes = require('./routes/spotify');
 const foodRoutes = require('./routes/food');
@@ -19,7 +18,7 @@ const app = express();
 // === Middleware ===
 app.use(cors());
 app.use(bodyParser.json());
-app.use(morgan('dev')); // log all requests in console (dev only)
+app.use(morgan('dev'));
 
 // === API Routes ===
 app.use('/api/wardrobe', wardrobeRoutes);
@@ -36,24 +35,42 @@ app.get('/health', (req, res) => {
   });
 });
 
+// === Version Endpoint ===
+app.get('/api/version', (req, res) => {
+  try {
+    const pkgPath = path.join(__dirname, 'package.json');
+    let version = 'unknown';
+
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      version = pkg.version || 'unknown';
+    }
+
+    res.json({
+      version,
+      commit: process.env.COMMIT_HASH || 'unknown',
+    });
+  } catch (err) {
+    console.error('Version check failed:', err.message);
+    res.status(500).json({ error: 'Failed to read version info' });
+  }
+});
+
 // === Serve Frontend in Production ===
 if (process.env.NODE_ENV === 'production') {
   const buildPath = path.join(__dirname, '..', 'frontend', 'build');
   app.use(express.static(buildPath));
 
-  // Catch-all for React Router
   app.get('*', (req, res) => {
     res.sendFile(path.join(buildPath, 'index.html'));
   });
 }
 
 // === Error Handling ===
-// 404 handler
 app.use((req, res, next) => {
   res.status(404).json({ error: 'Not Found', path: req.originalUrl });
 });
 
-// General error handler
 app.use((err, req, res, next) => {
   console.error('❌ Server Error:', err.stack || err.message);
   res.status(500).json({
