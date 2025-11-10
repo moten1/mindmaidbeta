@@ -1,0 +1,1 @@
+# Deployment Notes\n- Use .env files for secrets\n- On Heroku, root package.json runs heroku-postbuild to build frontend\n- On Render, use render.yaml\n
