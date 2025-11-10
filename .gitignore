@@ -3,3 +3,5 @@ node_modules/
 frontend/build/
 backend/uploads/
 .DS_Store
+".env" 
+".env.local" 
