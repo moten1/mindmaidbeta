@@ -43,7 +43,7 @@ if (missingKeys.length) {
 // ============================================
 const app = express();
 const PORT = process.env.PORT || 5000;
-const NODE_ENV = process.env.NODE_ENV || "development";
+const NODE_ENV = process.env.NODE_ENV || "production"; // default to production
 
 // ============================================
 // 🌐 Middleware Stack
@@ -58,9 +58,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
       callback(new Error("CORS policy violation"));
     },
     credentials: true,
@@ -95,9 +93,7 @@ app.get("/api/health", (req, res) => {
       used: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`,
       total: `${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)}MB`,
     },
-    apis: Object.fromEntries(
-      REQUIRED_KEYS.map((key) => [key, !!process.env[key]])
-    ),
+    apis: Object.fromEntries(REQUIRED_KEYS.map((key) => [key, !!process.env[key]])),
   });
 });
 
@@ -116,12 +112,10 @@ const routes = [
 const loadRoutes = async () => {
   for (const { path: routePath, file } of routes) {
     const fullPath = path.join(__dirname, file);
-
     if (!fs.existsSync(fullPath)) {
       console.warn(`⚠️ Route not found: ${file}`);
       continue;
     }
-
     try {
       const moduleURL = pathToFileURL(fullPath).href;
       const module = await import(moduleURL);
@@ -143,21 +137,22 @@ const frontendPath = path.join(__dirname, "../frontend/build");
 
 if (fs.existsSync(frontendPath)) {
   app.use(express.static(frontendPath, { maxAge: "1d" }));
-  app.get("*", (req, res) => {
+  // Serve React app for all non-API routes
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api")) return next();
     res.sendFile(path.join(frontendPath, "index.html"));
   });
   console.log(`✅ Frontend served from: ${frontendPath}`);
 } else {
-  console.warn("⚠️ Frontend not built. Run: npm run build");
+  console.warn("⚠️ Frontend not built. Run: npm run build in frontend/");
 }
 
 // ============================================
-// ❌ 404 Handler
-// ============================================
-app.use((req, res) => {
+// ❌ 404 Handler (for API routes)
+app.use("/api", (req, res) => {
   res.status(404).json({
     error: "Not Found",
-    message: `Route ${req.method} ${req.url} does not exist`,
+    message: `API Route ${req.method} ${req.url} does not exist`,
   });
 });
 
@@ -166,18 +161,14 @@ app.use((req, res) => {
 // ============================================
 app.use((err, req, res, next) => {
   console.error("❌ Error:", err.stack || err.message);
-  
+
   const statusCode = err.statusCode || 500;
   const response = {
     error: err.name || "ServerError",
-    message: NODE_ENV === "production" 
-      ? "An error occurred" 
-      : err.message,
+    message: NODE_ENV === "production" ? "An error occurred" : err.message,
   };
 
-  if (NODE_ENV === "development") {
-    response.stack = err.stack;
-  }
+  if (NODE_ENV === "development") response.stack = err.stack;
 
   res.status(statusCode).json(response);
 });

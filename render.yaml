@@ -1,26 +1,28 @@
 services:
   - type: web
-    name: mindmaid-backend
+    name: mindmaid
     env: node
     plan: free
-    rootDir: backend       # <- backend folder is root for Node service
-    buildCommand: "npm install"
+    rootDir: backend          # Backend folder is root for Node service
+    buildCommand: |
+      npm install
+      cd ../frontend
+      npm install
+      npm run build
+      cd ../backend
     startCommand: "node server.js"
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NODE_VERSION
-        value: "18"
-      - key: PORT
-        value: "5000"
+    envVars: []               # Add sensitive keys like HUME_API_KEY, OPENROUTER_API_KEY in Render dashboard
+    healthCheckPath: "/api/health"
+    autoDeploy: true
+    regions:
+      - oregon
+    instanceType: "starter"
+    # Optional: enable log streaming
+    # logDrains: ["your-log-drain-url"]
 
-  - type: web
-    name: mindmaid-frontend
-    env: static
-    rootDir: frontend      # <- frontend folder is root for React build
-    plan: free
-    buildCommand: "npm install && npm run build"
-    staticPublishPath: build
-    envVars:
-      - key: REACT_APP_API_URL
-        value: "https://mindmaid-backend.onrender.com/api"
+# Optional: add a cron job or background worker if needed
+# cronJobs:
+#   - name: cleanup-cache
+#     schedule: "0 0 * * *"
+#     command: "node scripts/cleanup.js"
+#     env: []
