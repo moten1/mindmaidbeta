@@ -3,6 +3,7 @@ services:
     name: mindmaid-backend
     env: node
     plan: free
+    rootDir: backend       # <- backend folder is root for Node service
     buildCommand: "npm install"
     startCommand: "node server.js"
     envVars:
@@ -16,7 +17,7 @@ services:
   - type: web
     name: mindmaid-frontend
     env: static
-    rootDir: frontend
+    rootDir: frontend      # <- frontend folder is root for React build
     plan: free
     buildCommand: "npm install && npm run build"
     staticPublishPath: build
