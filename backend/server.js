@@ -31,7 +31,9 @@ if (fs.existsSync(envPath)) {
   console.warn("⚠️ Using default .env (backend.env not found)");
 }
 
-// Validate required API keys
+// ============================================
+// ⚡ Validate API Keys
+// ============================================
 const REQUIRED_KEYS = [
   "HUME_API_KEY",
   "SPOONACULAR_API_KEY",
@@ -47,14 +49,14 @@ if (missingKeys.length) {
 }
 
 // ============================================
-// 🚀 Express App Initialization
+// 🚀 Express App
 // ============================================
 const app = express();
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 // ============================================
-// 🌐 Middleware Stack
+// 🌐 Middleware
 // ============================================
 const allowedOrigins = [
   "http://localhost:5173",
@@ -66,10 +68,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, Postman, etc.)
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
       callback(new Error("CORS policy violation"));
     },
     credentials: true,
@@ -78,7 +77,7 @@ app.use(
   })
 );
 
-app.use(compression()); // ✅ Added compression
+app.use(compression());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
@@ -104,14 +103,12 @@ app.get("/api/health", (req, res) => {
       used: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`,
       total: `${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)}MB`,
     },
-    apis: Object.fromEntries(
-      REQUIRED_KEYS.map((key) => [key, !!process.env[key]])
-    ),
+    apis: Object.fromEntries(REQUIRED_KEYS.map((key) => [key, !!process.env[key]])),
   });
 });
 
 // ============================================
-// 📁 Dynamic Route Registration
+// 📁 Dynamic Route Loading
 // ============================================
 const routes = [
   { path: "/api/auth", file: "./routes/authRoutes.js" },
@@ -125,17 +122,13 @@ const routes = [
 const loadRoutes = async () => {
   for (const { path: routePath, file } of routes) {
     const fullPath = path.join(__dirname, file);
-
     if (!fs.existsSync(fullPath)) {
       console.warn(`⚠️ Route not found: ${file}`);
       continue;
     }
-
     try {
-      const moduleURL = pathToFileURL(fullPath).href;
-      const module = await import(moduleURL);
-      const router = module.default || module;
-      app.use(routePath, router);
+      const module = await import(pathToFileURL(fullPath).href);
+      app.use(routePath, module.default || module);
       console.log(`✅ Loaded: ${routePath}`);
     } catch (err) {
       console.error(`❌ Failed to load ${file}:`, err.message);
@@ -149,65 +142,42 @@ await loadRoutes();
 // 🌍 Frontend Static Files (Production)
 // ============================================
 const frontendPath = path.join(__dirname, "../frontend/dist");
-
 if (fs.existsSync(frontendPath)) {
   app.use(express.static(frontendPath, { maxAge: "1d" }));
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(frontendPath, "index.html"));
-  });
+  app.get("*", (req, res) => res.sendFile(path.join(frontendPath, "index.html")));
   console.log(`✅ Frontend served from: ${frontendPath}`);
 } else {
   console.warn("⚠️ Frontend not built. Run: npm run build");
 }
 
 // ============================================
-// ❌ 404 Handler
+// ❌ 404 & Global Error Handlers
 // ============================================
-app.use((req, res) => {
-  res.status(404).json({
-    error: "Not Found",
-    message: `Route ${req.method} ${req.url} does not exist`,
+app.use((req, res) => res.status(404).json({ error: "Not Found", message: `Route ${req.method} ${req.url} does not exist` }));
+
+app.use((err, req, res, next) => {
+  console.error("❌ Error:", err.stack || err.message);
+  res.status(err.statusCode || 500).json({
+    error: err.name || "ServerError",
+    message: NODE_ENV === "production" ? "An error occurred" : err.message,
+    ...(NODE_ENV === "development" ? { stack: err.stack } : {}),
   });
 });
 
 // ============================================
-// ❌ Global Error Handler
-// ============================================
-app.use((err, req, res, next) => {
-  console.error("❌ Error:", err.stack || err.message);
-  
-  const statusCode = err.statusCode || 500;
-  const response = {
-    error: err.name || "ServerError",
-    message: NODE_ENV === "production" 
-      ? "An error occurred" 
-      : err.message,
-  };
-
-  if (NODE_ENV === "development") {
-    response.stack = err.stack;
-  }
-
-  res.status(statusCode).json(response);
-});
-
-// ============================================
-// 🧩 HTTP + WebSocket Server
+// 🧩 HTTP + WebSocket
 // ============================================
 const server = http.createServer(app);
-
-// Initialize WebSocket emotion stream
 createEmotionStreamServer(server);
 
 // ============================================
-// 🚀 Server Launch
+// 🚀 Start Server
 // ============================================
 server.listen(PORT, "0.0.0.0", () => {
   console.log("\n============================================");
   console.log(`🚀 MindMaid Backend Running`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌍 Environment: ${NODE_ENV}`);
-  console.log(`🔗 Local: http://localhost:${PORT}`);
   console.log(`📁 Frontend: ${fs.existsSync(frontendPath) ? "✅" : "❌"}`);
   console.log("============================================\n");
 });
@@ -221,8 +191,6 @@ const shutdown = (signal) => {
     console.log("✅ Server closed");
     process.exit(0);
   });
-
-  // Force shutdown after 10s
   setTimeout(() => {
     console.error("⚠️ Forced shutdown");
     process.exit(1);
@@ -231,13 +199,10 @@ const shutdown = (signal) => {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-
-// Handle uncaught errors
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
   shutdown("UNCAUGHT_EXCEPTION");
 });
-
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
   shutdown("UNHANDLED_REJECTION");
