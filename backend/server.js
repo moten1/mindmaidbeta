@@ -1,5 +1,5 @@
 // ============================================
-// 🌟 MindMaid Backend Server
+// 🌟 MindMaid Backend Server (Production Ready)
 // ============================================
 
 import express from "express";
@@ -28,12 +28,10 @@ if (fs.existsSync(envPath)) {
   console.log(`✅ Environment loaded: ${envPath}`);
 } else {
   dotenv.config();
-  console.warn("⚠️ Using default .env (backend.env not found)");
+  console.warn("⚠️ backend.env not found, using default .env");
 }
 
-// ============================================
-// ⚡ Validate API Keys
-// ============================================
+// Required API keys
 const REQUIRED_KEYS = [
   "HUME_API_KEY",
   "SPOONACULAR_API_KEY",
@@ -42,18 +40,14 @@ const REQUIRED_KEYS = [
 ];
 
 const missingKeys = REQUIRED_KEYS.filter((k) => !process.env[k]);
-if (missingKeys.length) {
-  console.warn(`⚠️ Missing API keys: ${missingKeys.join(", ")}`);
-} else {
-  console.log("✅ All API keys loaded");
-}
+if (missingKeys.length) console.warn(`⚠️ Missing API keys: ${missingKeys.join(", ")}`);
 
 // ============================================
-// 🚀 Express App
+// 🚀 Express App Initialization
 // ============================================
 const app = express();
 const PORT = process.env.PORT || 5000;
-const NODE_ENV = process.env.NODE_ENV || "development";
+const NODE_ENV = process.env.NODE_ENV || "production";
 
 // ============================================
 // 🌐 Middleware
@@ -72,8 +66,6 @@ app.use(
       callback(new Error("CORS policy violation"));
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
@@ -108,7 +100,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // ============================================
-// 📁 Dynamic Route Loading
+// 📁 Dynamic Routes
 // ============================================
 const routes = [
   { path: "/api/auth", file: "./routes/authRoutes.js" },
@@ -128,57 +120,61 @@ const loadRoutes = async () => {
     }
     try {
       const module = await import(pathToFileURL(fullPath).href);
-      app.use(routePath, module.default || module);
+      const router = module.default || module;
+      app.use(routePath, router);
       console.log(`✅ Loaded: ${routePath}`);
     } catch (err) {
       console.error(`❌ Failed to load ${file}:`, err.message);
     }
   }
 };
-
 await loadRoutes();
 
 // ============================================
 // 🌍 Frontend Static Files (Production)
 // ============================================
-const frontendPath = path.join(__dirname, "../frontend/dist");
-if (fs.existsSync(frontendPath)) {
-  app.use(express.static(frontendPath, { maxAge: "1d" }));
-  app.get("*", (req, res) => res.sendFile(path.join(frontendPath, "index.html")));
-  console.log(`✅ Frontend served from: ${frontendPath}`);
+const frontendBuildPath = path.join(__dirname, "../frontend/build");
+if (fs.existsSync(frontendBuildPath)) {
+  app.use(express.static(frontendBuildPath, { maxAge: "1d" }));
+  app.get("*", (req, res) => res.sendFile(path.join(frontendBuildPath, "index.html")));
+  console.log(`✅ Frontend served from: ${frontendBuildPath}`);
 } else {
-  console.warn("⚠️ Frontend not built. Run: npm run build");
+  console.warn("⚠️ Frontend not built. Run: npm run build in frontend/");
 }
 
 // ============================================
-// ❌ 404 & Global Error Handlers
+// ❌ 404 Handler
 // ============================================
-app.use((req, res) => res.status(404).json({ error: "Not Found", message: `Route ${req.method} ${req.url} does not exist` }));
+app.use((req, res) => res.status(404).json({ error: "Not Found" }));
 
+// ============================================
+// ❌ Global Error Handler
+// ============================================
 app.use((err, req, res, next) => {
   console.error("❌ Error:", err.stack || err.message);
-  res.status(err.statusCode || 500).json({
+  const status = err.statusCode || 500;
+  res.status(status).json({
     error: err.name || "ServerError",
     message: NODE_ENV === "production" ? "An error occurred" : err.message,
-    ...(NODE_ENV === "development" ? { stack: err.stack } : {}),
+    ...(NODE_ENV === "development" && { stack: err.stack }),
   });
 });
 
 // ============================================
-// 🧩 HTTP + WebSocket
+// 🧩 HTTP + WebSocket Server
 // ============================================
 const server = http.createServer(app);
 createEmotionStreamServer(server);
 
 // ============================================
-// 🚀 Start Server
+// 🚀 Server Launch
 // ============================================
 server.listen(PORT, "0.0.0.0", () => {
   console.log("\n============================================");
   console.log(`🚀 MindMaid Backend Running`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌍 Environment: ${NODE_ENV}`);
-  console.log(`📁 Frontend: ${fs.existsSync(frontendPath) ? "✅" : "❌"}`);
+  console.log(`📁 Frontend: ${fs.existsSync(frontendBuildPath) ? "✅" : "❌"}`);
   console.log("============================================\n");
 });
 
@@ -186,7 +182,7 @@ server.listen(PORT, "0.0.0.0", () => {
 // 🛑 Graceful Shutdown
 // ============================================
 const shutdown = (signal) => {
-  console.log(`\n${signal} received. Shutting down gracefully...`);
+  console.log(`\n${signal} received. Shutting down...`);
   server.close(() => {
     console.log("✅ Server closed");
     process.exit(0);
@@ -197,8 +193,7 @@ const shutdown = (signal) => {
   }, 10000);
 };
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+["SIGTERM", "SIGINT"].forEach(sig => process.on(sig, () => shutdown(sig)));
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
   shutdown("UNCAUGHT_EXCEPTION");

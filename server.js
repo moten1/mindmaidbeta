@@ -1,5 +1,5 @@
 // ============================================
-// 🌟 MindMaid Backend Server
+// 🌟 MindMaid Backend Server (Production-Ready)
 // ============================================
 
 import express from "express";
@@ -22,16 +22,8 @@ const __dirname = path.dirname(__filename);
 // ============================================
 // ⚙️ Environment Configuration
 // ============================================
-const envPath = path.resolve(__dirname, "./backend.env");
-if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath });
-  console.log(`✅ Environment loaded: ${envPath}`);
-} else {
-  dotenv.config();
-  console.warn("⚠️ Using default .env (backend.env not found)");
-}
+dotenv.config(); // Render handles envVars
 
-// Validate required API keys
 const REQUIRED_KEYS = [
   "HUME_API_KEY",
   "SPOONACULAR_API_KEY",
@@ -66,7 +58,6 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, Postman, etc.)
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
@@ -78,7 +69,7 @@ app.use(
   })
 );
 
-app.use(compression()); // ✅ Added compression
+app.use(compression());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
@@ -148,7 +139,7 @@ await loadRoutes();
 // ============================================
 // 🌍 Frontend Static Files (Production)
 // ============================================
-const frontendPath = path.join(__dirname, "../frontend/dist");
+const frontendPath = path.join(__dirname, "../frontend/build");
 
 if (fs.existsSync(frontendPath)) {
   app.use(express.static(frontendPath, { maxAge: "1d" }));
@@ -222,7 +213,6 @@ const shutdown = (signal) => {
     process.exit(0);
   });
 
-  // Force shutdown after 10s
   setTimeout(() => {
     console.error("⚠️ Forced shutdown");
     process.exit(1);
@@ -231,13 +221,10 @@ const shutdown = (signal) => {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-
-// Handle uncaught errors
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
   shutdown("UNCAUGHT_EXCEPTION");
 });
-
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
   shutdown("UNHANDLED_REJECTION");
