@@ -3,26 +3,24 @@ services:
     name: mindmaid
     env: node
     plan: free
-    rootDir: backend          # Backend folder is root for Node service
-    buildCommand: |
-      npm install
-      cd ../frontend
-      npm install
-      npm run build
-      cd ../backend
+    rootDir: backend
+    buildCommand: "npm install"
     startCommand: "node server.js"
-    envVars: []               # Add sensitive keys like HUME_API_KEY, OPENROUTER_API_KEY in Render dashboard
+    envVars: []
     healthCheckPath: "/api/health"
     autoDeploy: true
     regions:
       - oregon
     instanceType: "starter"
-    # Optional: enable log streaming
-    # logDrains: ["your-log-drain-url"]
 
-# Optional: add a cron job or background worker if needed
-# cronJobs:
-#   - name: cleanup-cache
-#     schedule: "0 0 * * *"
-#     command: "node scripts/cleanup.js"
-#     env: []
+  - type: web
+    name: mindmaid-frontend
+    env: static
+    rootDir: frontend
+    plan: free
+    buildCommand: "npm install && npm run build"
+    staticPublishPath: build
+    envVars: []
+    autoDeploy: true
+    regions:
+      - oregon
