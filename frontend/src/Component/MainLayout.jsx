@@ -6,9 +6,9 @@ const MainLayout = () => {
   const location = useLocation();
 
   const navItems = [
-    { name: "Home", path: "/" },
-    { name: "About", path: "/about" },
-    { name: "Contact", path: "/contact" },
+    { name: "Dashboard", path: "/" },
+    { name: "Wardrobe", path: "/wardrobe" },
+    { name: "Food", path: "/food" },
   ];
 
   return (
@@ -18,7 +18,8 @@ const MainLayout = () => {
         className={`fixed inset-y-0 left-0 w-64 bg-gray-800 text-white flex flex-col p-4 transform transition-transform duration-300 z-30
         ${sidebarOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
       >
-        <h1 className="text-2xl font-bold mb-8">MindMaid</h1>
+        <h1 className="text-2xl font-bold mb-8">🧠 MindMaid</h1>
+        <p className="text-sm text-gray-400 mb-6">Decision Paralysis Helper</p>
         <nav className="flex flex-col gap-4" aria-label="Main Navigation">
           {navItems.map((item) => (
             <Link
@@ -35,7 +36,7 @@ const MainLayout = () => {
         </nav>
       </aside>
 
-      {/* Overlay for mobile when sidebar is open */}
+      {/* Overlay for mobile */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black opacity-25 z-20 md:hidden"
@@ -43,7 +44,7 @@ const MainLayout = () => {
         ></div>
       )}
 
-      {/* Main content area */}
+      {/* Main content */}
       <div className="flex-1 flex flex-col md:ml-64 min-h-0">
         {/* Header */}
         <header className="bg-white shadow p-4 flex items-center justify-between">
@@ -61,7 +62,7 @@ const MainLayout = () => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <h2 className="text-xl font-semibold">MindMaid</h2>
+          <h2 className="text-xl font-semibold">MindMaid AI</h2>
         </header>
 
         {/* Page Content */}
@@ -71,7 +72,7 @@ const MainLayout = () => {
 
         {/* Footer */}
         <footer className="bg-white shadow p-4 text-center text-gray-500">
-          © 2025 MindMaid. All rights reserved.
+          © 2025 MindMaid. Beat decision paralysis with AI.
         </footer>
       </div>
     </div>
