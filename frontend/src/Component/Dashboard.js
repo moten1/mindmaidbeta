@@ -18,15 +18,32 @@ export default function Dashboard() {
 
     setLoading(true);
     try {
-      const response = await axios.post(`${API_URL}/api/ai/recommend`, {
-        mood: mood,
-        preferences: {
-          includeWardrobe: true,
-          includeFood: true,
-          includeMusic: true
-        }
+      // Get AI advice for outfit
+      const outfitResponse = await axios.post(`${API_URL}/api/ai/advice`, {
+        query: `Suggest an outfit for someone feeling ${mood}`,
+        mood: mood.toLowerCase(),
+        type: 'clothes'
       });
-      setRecommendations(response.data);
+
+      // Get AI advice for food
+      const foodResponse = await axios.post(`${API_URL}/api/ai/advice`, {
+        query: `Suggest a meal for someone feeling ${mood}`,
+        mood: mood.toLowerCase(),
+        type: 'meals'
+      });
+
+      // Get AI advice for music
+      const musicResponse = await axios.post(`${API_URL}/api/ai/advice`, {
+        query: `Suggest music for someone feeling ${mood}`,
+        mood: mood.toLowerCase(),
+        type: 'activity'
+      });
+
+      setRecommendations({
+        outfit: outfitResponse.data.result,
+        food: foodResponse.data.result,
+        music: musicResponse.data.result
+      });
     } catch (error) {
       console.error('Error getting recommendations:', error);
       alert('Failed to get recommendations. Please try again.');
