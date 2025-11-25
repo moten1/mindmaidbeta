@@ -1,0 +1,27 @@
+{
+  "short_name": "MindMaid",
+  "name": "MindMaid - Decision Paralysis Helper",
+  "description": "AI-powered app to help with decision paralysis for wardrobe, food, and mood",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#facc15",
+  "background_color": "#ffffff",
+  "orientation": "portrait"
+}
