@@ -1,27 +1,29 @@
 {
   "short_name": "MindMaid",
-  "name": "MindMaid - Decision Paralysis Helper",
-  "description": "AI-powered app to help with decision paralysis for wardrobe, food, and mood",
+  "name": "MindMaid Neuro-Energetic App",
+  "description": "AI + Energy Healing Assistant",
   "icons": [
     {
-      "src": "favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
     },
     {
-      "src": "logo192.png",
-      "type": "image/png",
-      "sizes": "192x192"
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
     },
     {
-      "src": "logo512.png",
+      "src": "/icons/maskable-512.png",
+      "sizes": "512x512",
       "type": "image/png",
-      "sizes": "512x512"
+      "purpose": "maskable"
     }
   ],
-  "start_url": ".",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "theme_color": "#facc15",
-  "background_color": "#ffffff",
+  "theme_color": "#0a1a12",
+  "background_color": "#0a1a12",
   "orientation": "portrait"
 }
