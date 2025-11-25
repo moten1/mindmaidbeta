@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: mindmaid
+    name: mindmaid-backend
     env: node
     plan: free
     rootDir: backend
