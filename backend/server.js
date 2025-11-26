@@ -42,18 +42,20 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || "production";
 
-// Middleware
+// Middleware - CORS (FIXED)
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
   "https://mindmaid.app",
   "https://www.mindmaid.app",
+  "https://mindmaidbeta-frontend.onrender.com"
 ];
 
 app.use(
   cors({
     origin: (origin, cb) => {
       if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      console.log(`⚠️ CORS rejected: ${origin}`);
       cb(new Error("CORS policy violation"));
     },
     credentials: true,
