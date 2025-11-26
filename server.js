@@ -17,21 +17,16 @@ import { createEmotionStreamServer } from "./routes/emotionStream.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Env
-const envPath = path.resolve(__dirname, "./backend.env");
-if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath });
-  console.log(`✅ Environment loaded: ${envPath}`);
-} else {
-  dotenv.config();
-  console.warn("⚠️ backend.env not found, using default .env");
-}
+// Env - Simplified for platform compatibility
+dotenv.config(); 
+console.log("✅ Environment variables loaded (via default .env or platform variables).");
 
 const REQUIRED_KEYS = [
   "HUME_API_KEY",
   "SPOONACULAR_API_KEY",
   "DEEPSEEK_API_KEY",
   "OPENROUTER_API_KEY",
+  "FRONTEND_URL", // <-- ADDED: Crucial for CORS configuration
 ];
 
 const missing = REQUIRED_KEYS.filter(k => !process.env[k]);
@@ -42,19 +37,23 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || "production";
 
-// Middleware - CORS (FIXED)
+// Middleware - CORS (FIXED & improved for flexibility)
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
-  "https://mindmaid.app",
-  "https://www.mindmaid.app",
-  "https://mindmaidbeta-frontend.onrender.com"
-];
+  process.env.FRONTEND_URL, // Use ENV variable for production URL
+  // You can keep other specific origins here if needed, or remove them
+].filter(Boolean); // Filters out undefined/null values
 
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      // Allow requests with no origin (like mobile apps or server-to-server)
+      if (!origin) return cb(null, true); 
+      
+      // Check if the requesting origin is in the allowed list
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      
       console.log(`⚠️ CORS rejected: ${origin}`);
       cb(new Error("CORS policy violation"));
     },
@@ -81,7 +80,8 @@ app.get("/api/health", (req, res) =>
     status: "healthy",
     environment: NODE_ENV,
     timestamp: new Date().toISOString(),
-    apis: Object.fromEntries(REQUIRED_KEYS.map(k => [k, !!process.env[k]])),
+    // Include FRONTEND_URL in health check output for verification
+    apis: Object.fromEntries(REQUIRED_KEYS.map(k => [k, !!process.env[k]])), 
   })
 );
 
@@ -92,7 +92,8 @@ const ROUTES = [
   { path: "/api/feedback", file: "./routes/feedbackRoutes.js" },
   { path: "/api/sessions", file: "./routes/sessionRoutes.js" },
   { path: "/api/ai", file: "./routes/aiRoutes.js" },
-  { path: "/api/emotion", file: "./routes/emotionRoutes.js" },
+  { path: "/api/emotion", file: "./routes/emotionRoutes.js" }, // Emotion REST endpoints
+  // Add other routes here as needed (e.g., wardrobe, food, spotify)
 ];
 
 const loadRoutes = async () => {
@@ -148,7 +149,8 @@ app.use((err, req, res, next) => {
 
 // HTTP + WebSocket
 const server = http.createServer(app);
-createEmotionStreamServer(server);
+// CRITICAL: The Hume WebSocket handler. Listens for 'upgrade' events on the HTTP server.
+createEmotionStreamServer(server); 
 
 // Start
 server.listen(PORT, "0.0.0.0", () => {
@@ -157,6 +159,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌍 Environment: ${NODE_ENV}`);
   console.log(`🎨 Frontend build present: ${fs.existsSync(buildDir) ? "yes" : "no"}`);
+  console.log(`🔗 Frontend URL: ${process.env.FRONTEND_URL || "Not Set"}`); // <-- Added for easy verification
   console.log("============================================\n");
 });
 
