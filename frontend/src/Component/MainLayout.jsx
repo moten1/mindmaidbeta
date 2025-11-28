@@ -6,11 +6,11 @@ const MainLayout = () => {
   const location = useLocation();
 
   const navItems = [
-    { name: "Dashboard", path: "/" },
-    { name: "Wardrobe", path: "/wardrobe" },
-    { name: "Food", path: "/food" },
-  ];
-
+  { name: "Emotion Analysis", path: "/" },
+  { name: "Dashboard", path: "/dashboard" },
+  { name: "Wardrobe", path: "/wardrobe" },
+  { name: "Food", path: "/food" },
+];
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
