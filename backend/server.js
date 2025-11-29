@@ -36,7 +36,6 @@ const REQUIRED_KEYS = [
   "SPOONACULAR_API_KEY",
   "DEEPSEEK_API_KEY",
   "OPENROUTER_API_KEY",
-  "FRONTEND_URL",
 ];
 
 const missing = REQUIRED_KEYS.filter((k) => !process.env[k]);
@@ -52,13 +51,15 @@ const PORT = Number(process.env.PORT || 5000);
 const NODE_ENV = process.env.NODE_ENV || "production";
 
 // -----------------------------
-// CORS (allow FRONTEND_URL + localhost dev)
+// CORS (allow frontend + localhost dev)
 // -----------------------------
 const allowedOrigins = [
-  process.env.FRONTEND_URL || undefined,
+  "https://mindmaidbeta-frontend.onrender.com",
   "http://localhost:3000",
   "http://localhost:5173",
-].filter(Boolean);
+  "https://mindmaid.app",
+  "https://www.mindmaid.app"
+];
 
 app.use(
   cors({
@@ -88,7 +89,6 @@ app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
-  // note: modern browsers ignore X-XSS-Protection; kept for older browsers
   res.setHeader("X-XSS-Protection", "1; mode=block");
   next();
 });
@@ -103,7 +103,6 @@ app.get("/api/health", (req, res) => {
     timestamp: new Date().toISOString(),
     environment: NODE_ENV,
     port: PORT,
-    frontend_url: process.env.FRONTEND_URL || null,
     apis: Object.fromEntries(REQUIRED_KEYS.map((k) => [k, !!process.env[k]])),
     memory: {
       heapUsedMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
@@ -121,7 +120,7 @@ const ROUTES = [
   { path: "/api/feedback", file: "./routes/feedbackRoutes.js" },
   { path: "/api/sessions", file: "./routes/sessionRoutes.js" },
   { path: "/api/ai", file: "./routes/aiRoutes.js" },
-  { path: "/api/emotion", file: "./routes/emotionRoutes.js" }, // REST emotion
+  { path: "/api/emotion", file: "./routes/emotionRoutes.js" },
 ];
 
 const loadRoutes = async () => {
@@ -189,10 +188,10 @@ app.use((err, req, res, next) => {
 // -----------------------------
 const server = http.createServer(app);
 
-// Attach WebSocket proxy BEFORE listening (listens on 'upgrade' events)
+// Attach WebSocket proxy BEFORE listening
 try {
   createEmotionStreamServer(server);
-  console.log("🧩 Emotion websocket proxy bound to server (upgrade listener installed)");
+  console.log("🧩 Emotion websocket proxy initialized");
 } catch (e) {
   console.error("❌ Failed to initialize emotion stream proxy:", e);
 }
@@ -205,8 +204,8 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 MindMaid Backend Running`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌍 Environment: ${NODE_ENV}`);
-  console.log(`🎨 Frontend build present: ${fs.existsSync(buildDir) ? "yes" : "no"}`);
-  console.log(`🔗 Expected FRONTEND_URL: ${process.env.FRONTEND_URL || "not set"}`);
+  console.log(`🎨 Frontend build: ${fs.existsSync(buildDir) ? "yes" : "no"}`);
+  console.log(`🔗 CORS allowed origins: ${allowedOrigins.length}`);
   console.log("============================================");
 });
 
@@ -237,4 +236,3 @@ process.on("unhandledRejection", (reason, p) => {
   console.error("❌ Unhandled Rejection:", p, reason);
   shutdown("unhandledRejection");
 });
- 
