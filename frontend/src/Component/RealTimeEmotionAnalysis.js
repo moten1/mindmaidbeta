@@ -9,13 +9,52 @@ export default function LiveEmotionStream() {
   const videoRef = useRef(null);
   const wsRef = useRef(null);
   const streamRef = useRef(null);
+  const lastEmotionsRef = useRef({});
+  const fpsRef = useRef(5); // initial FPS
 
   const showToast = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(""), 3000);
   };
 
-  // Start camera & WebSocket streaming
+  // Compare emotions to detect significant changes
+  const calculateEmotionDelta = (newEmotions) => {
+    const last = lastEmotionsRef.current;
+    if (!last || Object.keys(last).length === 0) return 1; // max delta
+    let totalDelta = 0;
+    let count = 0;
+    for (const key in newEmotions) {
+      totalDelta += Math.abs((newEmotions[key] || 0) - (last[key] || 0));
+      count++;
+    }
+    return totalDelta / count; // average delta
+  };
+
+  const captureFrame = () => {
+    if (!videoRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 480;
+    canvas.height = (videoRef.current.videoHeight / videoRef.current.videoWidth) * 480;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob((blob) => {
+      if (blob) wsRef.current.send(blob);
+    }, "image/jpeg");
+  };
+
+  // Adaptive streaming loop
+  const streamLoop = () => {
+    if (!streaming) return;
+
+    captureFrame();
+
+    // Adjust FPS dynamically based on emotion changes
+    let interval = 1000 / fpsRef.current; // milliseconds per frame
+    setTimeout(streamLoop, interval);
+  };
+
   const startStreaming = async () => {
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
@@ -28,12 +67,22 @@ export default function LiveEmotionStream() {
       ws.onopen = () => {
         console.log("✅ Connected to WebSocket proxy");
         setStreaming(true);
+        streamLoop();
       };
 
       ws.onmessage = (msg) => {
         try {
           const data = JSON.parse(msg.data);
           setResult(data);
+
+          if (data.emotions) {
+            // calculate change
+            const delta = calculateEmotionDelta(data.emotions);
+            lastEmotionsRef.current = data.emotions;
+
+            // Dynamic FPS: more changes → faster frame rate
+            fpsRef.current = Math.min(20, Math.max(2, Math.floor(delta * 20))); // min 2 FPS, max 20 FPS
+          }
         } catch (err) {
           console.error("Invalid WS message", err);
         }
@@ -44,30 +93,6 @@ export default function LiveEmotionStream() {
       ws.onclose = () => {
         console.log("WebSocket closed");
         setStreaming(false);
-      };
-
-      // Capture frames as user interacts
-      const captureFrame = () => {
-        if (!videoRef.current || ws.readyState !== WebSocket.OPEN) return;
-
-        const canvas = document.createElement("canvas");
-        canvas.width = 480;
-        canvas.height = (videoRef.current.videoHeight / videoRef.current.videoWidth) * 480;
-        canvas.getContext("2d").drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-
-        canvas.toBlob((blob) => {
-          if (blob) ws.send(blob);
-        }, "image/jpeg");
-      };
-
-      // Capture frames only when user is active (mousemove/keydown)
-      const handleUserActivity = () => captureFrame();
-      window.addEventListener("mousemove", handleUserActivity);
-      window.addEventListener("keydown", handleUserActivity);
-
-      ws.onclose = () => {
-        window.removeEventListener("mousemove", handleUserActivity);
-        window.removeEventListener("keydown", handleUserActivity);
       };
 
     } catch (err) {
@@ -87,10 +112,12 @@ export default function LiveEmotionStream() {
     }
     setStreaming(false);
     setResult(null);
+    lastEmotionsRef.current = {};
+    fpsRef.current = 5;
   };
 
   useEffect(() => {
-    return () => stopStreaming(); // cleanup on unmount
+    return () => stopStreaming();
   }, []);
 
   return (
@@ -102,9 +129,13 @@ export default function LiveEmotionStream() {
       <video ref={videoRef} autoPlay playsInline className="w-full max-w-md rounded-lg border-2 border-gray-300" />
 
       {!streaming ? (
-        <button onClick={startStreaming} className="bg-yellow-400 px-6 py-3 rounded-md text-white font-semibold hover:bg-yellow-500">Start Live Emotion Stream</button>
+        <button onClick={startStreaming} className="bg-yellow-400 px-6 py-3 rounded-md text-white font-semibold hover:bg-yellow-500">
+          Start Live Emotion Stream
+        </button>
       ) : (
-        <button onClick={stopStreaming} className="bg-gray-400 px-6 py-3 rounded-md text-white font-semibold hover:bg-gray-500">Stop Stream</button>
+        <button onClick={stopStreaming} className="bg-gray-400 px-6 py-3 rounded-md text-white font-semibold hover:bg-gray-500">
+          Stop Stream
+        </button>
       )}
 
       {result && (
