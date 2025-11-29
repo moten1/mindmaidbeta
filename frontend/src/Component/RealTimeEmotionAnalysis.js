@@ -1,154 +1,276 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect } from 'react';
+import axios from 'axios';
 
-const WS_URL = process.env.REACT_APP_WS_PROXY || "ws://localhost:5000/api/emotion/stream";
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
-export default function LiveEmotionStream() {
-  const [result, setResult] = useState(null);
-  const [streaming, setStreaming] = useState(false);
-  const [toast, setToast] = useState("");
+export default function RealTimeEmotionAnalysis() {
+  const [currentEmotion, setCurrentEmotion] = useState(null);
+  const [emotionHistory, setEmotionHistory] = useState([]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [fps, setFps] = useState(2); // Start at 2 FPS
+  const [bandwidth, setBandwidth] = useState('Low');
+  
   const videoRef = useRef(null);
-  const wsRef = useRef(null);
+  const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const lastEmotionsRef = useRef({});
-  const fpsRef = useRef(5); // initial FPS
+  const intervalRef = useRef(null);
+  const lastEmotionRef = useRef(null);
+  const frameCountRef = useRef(0);
 
-  const showToast = (msg) => {
-    setToast(msg);
-    setTimeout(() => setToast(""), 3000);
-  };
-
-  // Compare emotions to detect significant changes
-  const calculateEmotionDelta = (newEmotions) => {
-    const last = lastEmotionsRef.current;
-    if (!last || Object.keys(last).length === 0) return 1; // max delta
-    let totalDelta = 0;
-    let count = 0;
-    for (const key in newEmotions) {
-      totalDelta += Math.abs((newEmotions[key] || 0) - (last[key] || 0));
-      count++;
-    }
-    return totalDelta / count; // average delta
-  };
-
-  const captureFrame = () => {
-    if (!videoRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = 480;
-    canvas.height = (videoRef.current.videoHeight / videoRef.current.videoWidth) * 480;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-
-    canvas.toBlob((blob) => {
-      if (blob) wsRef.current.send(blob);
-    }, "image/jpeg");
-  };
-
-  // Adaptive streaming loop
-  const streamLoop = () => {
-    if (!streaming) return;
-
-    captureFrame();
-
-    // Adjust FPS dynamically based on emotion changes
-    let interval = 1000 / fpsRef.current; // milliseconds per frame
-    setTimeout(streamLoop, interval);
-  };
-
-  const startStreaming = async () => {
+  // Start camera
+  const startCamera = async () => {
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-      videoRef.current.srcObject = mediaStream;
-      streamRef.current = mediaStream;
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        } 
+      });
+      videoRef.current.srcObject = stream;
+      streamRef.current = stream;
+    } catch (error) {
+      alert('Camera access denied. Please allow camera access.');
+    }
+  };
 
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
+  // Capture frame and analyze
+  const analyzeFrame = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
 
-      ws.onopen = () => {
-        console.log("✅ Connected to WebSocket proxy");
-        setStreaming(true);
-        streamLoop();
-      };
-
-      ws.onmessage = (msg) => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+    
+    // Convert to base64
+    canvas.toBlob(async (blob) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      reader.onloadend = async () => {
+        const base64Image = reader.result.split(',')[1];
+        
         try {
-          const data = JSON.parse(msg.data);
-          setResult(data);
+          const response = await axios.post(`${API_URL}/api/emotion/detect`, {
+            imageBase64: base64Image
+          });
 
-          if (data.emotions) {
-            // calculate change
-            const delta = calculateEmotionDelta(data.emotions);
-            lastEmotionsRef.current = data.emotions;
+          if (response.data.success) {
+            const newEmotion = response.data.mood;
+            const confidence = response.data.confidence;
 
-            // Dynamic FPS: more changes → faster frame rate
-            fpsRef.current = Math.min(20, Math.max(2, Math.floor(delta * 20))); // min 2 FPS, max 20 FPS
+            // Only update if emotion changed significantly
+            if (newEmotion !== lastEmotionRef.current) {
+              lastEmotionRef.current = newEmotion;
+              
+              setCurrentEmotion({
+                emotion: newEmotion,
+                confidence: confidence,
+                timestamp: new Date().toLocaleTimeString()
+              });
+
+              // Add to history
+              setEmotionHistory(prev => [
+                { emotion: newEmotion, confidence, time: new Date().toLocaleTimeString() },
+                ...prev.slice(0, 9) // Keep last 10
+              ]);
+
+              // Adjust FPS based on emotion stability
+              adjustFPS(true); // Emotion changed - increase FPS
+            } else {
+              adjustFPS(false); // Same emotion - decrease FPS
+            }
           }
-        } catch (err) {
-          console.error("Invalid WS message", err);
+        } catch (error) {
+          console.error('Analysis error:', error);
         }
       };
+    }, 'image/jpeg', 0.8);
+  };
 
-      ws.onerror = (err) => console.error("WebSocket error:", err);
+  // Smart FPS adjustment
+  const adjustFPS = (emotionChanged) => {
+    setFps(current => {
+      let newFps = current;
+      
+      if (emotionChanged) {
+        // Emotion changed - increase FPS to catch rapid changes
+        newFps = Math.min(current + 2, 20); // Max 20 FPS
+        setBandwidth('High');
+      } else {
+        // Stable emotion - decrease FPS to save bandwidth
+        newFps = Math.max(current - 0.5, 1); // Min 1 FPS
+        
+        if (newFps <= 2) setBandwidth('Low');
+        else if (newFps <= 10) setBandwidth('Medium');
+        else setBandwidth('High');
+      }
+      
+      return newFps;
+    });
+  };
 
-      ws.onclose = () => {
-        console.log("WebSocket closed");
-        setStreaming(false);
-      };
-
-    } catch (err) {
-      console.error(err);
-      showToast("Camera access denied or failed to start stream.");
+  // Start/Stop analysis
+  const toggleAnalysis = () => {
+    if (isAnalyzing) {
+      // Stop
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      setIsAnalyzing(false);
+    } else {
+      // Start
+      startCamera();
+      setIsAnalyzing(true);
     }
   };
 
-  const stopStreaming = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    setStreaming(false);
-    setResult(null);
-    lastEmotionsRef.current = {};
-    fpsRef.current = 5;
-  };
-
+  // Update interval when FPS changes
   useEffect(() => {
-    return () => stopStreaming();
+    if (isAnalyzing) {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      
+      const interval = 1000 / fps;
+      intervalRef.current = setInterval(analyzeFrame, interval);
+      
+      frameCountRef.current++;
+    }
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [isAnalyzing, fps]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
   }, []);
 
   return (
     <div className="space-y-6">
-      {toast && <div className="fixed top-5 right-5 bg-yellow-400 text-white px-4 py-2 rounded-md z-50">{toast}</div>}
+      <h1 className="text-4xl font-extrabold text-gray-800">Real-Time Emotion Analysis</h1>
+      
+      <p className="text-lg text-gray-600">
+        Continuous AI-powered emotion detection that adapts bandwidth based on mood changes.
+      </p>
 
-      <h1 className="text-4xl font-bold text-gray-800">Live Emotion Stream</h1>
+      <div className="grid md:grid-cols-2 gap-6">
+        {/* Video Feed */}
+        <div className="bg-white p-6 rounded-lg shadow-md">
+          <h2 className="text-2xl font-semibold mb-4">Live Camera Feed</h2>
+          
+          <div className="relative">
+            <video 
+              ref={videoRef} 
+              autoPlay 
+              playsInline
+              className="w-full rounded-lg border-2 border-gray-300"
+            />
+            <canvas ref={canvasRef} className="hidden" />
+            
+            {currentEmotion && (
+              <div className="absolute top-4 left-4 bg-yellow-400 text-gray-900 px-4 py-2 rounded-lg font-bold">
+                {currentEmotion.emotion.toUpperCase()} ({(currentEmotion.confidence * 100).toFixed(0)}%)
+              </div>
+            )}
+          </div>
 
-      <video ref={videoRef} autoPlay playsInline className="w-full max-w-md rounded-lg border-2 border-gray-300" />
+          <div className="mt-4 flex items-center justify-between">
+            <button
+              onClick={toggleAnalysis}
+              className={`px-6 py-3 rounded-md font-semibold transition-colors ${
+                isAnalyzing 
+                  ? 'bg-red-500 hover:bg-red-600 text-white' 
+                  : 'bg-yellow-400 hover:bg-yellow-500 text-white'
+              }`}
+            >
+              {isAnalyzing ? '⏸️ Stop Analysis' : '▶️ Start Analysis'}
+            </button>
 
-      {!streaming ? (
-        <button onClick={startStreaming} className="bg-yellow-400 px-6 py-3 rounded-md text-white font-semibold hover:bg-yellow-500">
-          Start Live Emotion Stream
-        </button>
-      ) : (
-        <button onClick={stopStreaming} className="bg-gray-400 px-6 py-3 rounded-md text-white font-semibold hover:bg-gray-500">
-          Stop Stream
-        </button>
-      )}
-
-      {result && (
-        <div className="p-4 bg-white rounded-lg shadow-md">
-          <p className="font-semibold text-gray-800">Detected Mood: {result.dominantEmotion || "Analyzing..."}</p>
-          {result.emotions && Object.entries(result.emotions).map(([k,v]) => (
-            <div key={k} className="flex justify-between">
-              <span className="capitalize">{k}</span>
-              <span>{(v*100).toFixed(1)}%</span>
+            <div className="text-sm space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold">FPS:</span>
+                <span className="text-gray-600">{fps.toFixed(1)}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold">Bandwidth:</span>
+                <span className={`px-2 py-1 rounded text-xs font-bold ${
+                  bandwidth === 'High' ? 'bg-red-100 text-red-700' :
+                  bandwidth === 'Medium' ? 'bg-yellow-100 text-yellow-700' :
+                  'bg-green-100 text-green-700'
+                }`}>
+                  {bandwidth}
+                </span>
+              </div>
             </div>
-          ))}
+          </div>
         </div>
-      )}
+
+        {/* Current Emotion & History */}
+        <div className="bg-white p-6 rounded-lg shadow-md">
+          <h2 className="text-2xl font-semibold mb-4">Emotion Tracking</h2>
+          
+          {currentEmotion ? (
+            <div className="space-y-4">
+              <div className="p-4 bg-yellow-50 rounded-lg">
+                <p className="text-sm text-gray-600 mb-1">Current Emotion</p>
+                <p className="text-3xl font-bold text-yellow-700 capitalize">
+                  {currentEmotion.emotion}
+                </p>
+                <p className="text-sm text-gray-500 mt-1">
+                  Confidence: {(currentEmotion.confidence * 100).toFixed(1)}%
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  {currentEmotion.timestamp}
+                </p>
+              </div>
+
+              <div>
+                <h3 className="font-semibold text-gray-800 mb-2">Recent Changes</h3>
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {emotionHistory.map((item, index) => (
+                    <div key={index} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                      <span className="capitalize font-medium">{item.emotion}</span>
+                      <div className="text-right">
+                        <span className="text-sm text-gray-600">{(item.confidence * 100).toFixed(0)}%</span>
+                        <span className="text-xs text-gray-400 ml-2">{item.time}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center text-gray-400 py-12">
+              <p>Click "Start Analysis" to begin real-time emotion detection</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-blue-50 p-4 rounded-lg">
+        <h3 className="font-semibold text-gray-800 mb-2">📊 How it works:</h3>
+        <ul className="text-sm text-gray-600 space-y-1">
+          <li>• <strong>Adaptive FPS:</strong> Increases to 20 FPS when emotions change, drops to 1 FPS when stable</li>
+          <li>• <strong>Smart Bandwidth:</strong> Only sends frames when needed, saving data</li>
+          <li>• <strong>Real-time Detection:</strong> Analyzes your face continuously using Hume AI</li>
+          <li>• <strong>History Tracking:</strong> Keeps last 10 emotion changes for reference</li>
+        </ul>
+      </div>
     </div>
   );
 }
