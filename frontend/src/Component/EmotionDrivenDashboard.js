@@ -41,10 +41,16 @@ export default function EmotionDrivenDashboard() {
         setIsAnalyzing(true);
         startFrameCapture();
       };
-
-      ws.onmessage = async (event) => {
-        try {
-          const data = JSON.parse(event.data);
+ws.onmessage = async (event) => {
+  try {
+    // Handle both text and binary data
+    let data;
+    if (event.data instanceof Blob) {
+      const text = await event.data.text();
+      data = JSON.parse(text);
+    } else {
+      data = JSON.parse(event.data);
+    }
           
           if (data.success && data.dominantEmotion) {
             const emotion = data.dominantEmotion;
