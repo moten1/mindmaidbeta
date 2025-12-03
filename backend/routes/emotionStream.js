@@ -1,109 +1,158 @@
-// ===================================================
-// 🌊 Emotion Stream Proxy (Hume AI Facial Expression)
-// ===================================================
+// backend/routes/emotionStream.js
+import { WebSocketServer, WebSocket } from 'ws';
 
-import { WebSocketServer, WebSocket } from "ws";
-// Removed 'fetch' as we no longer need the initial REST call.
+// Hume WebSocket endpoint (server-side API key)
+const HUME_WS_URL = 'wss://api.hume.ai/v0/stream/models?models=face';
 
-// The correct, direct WebSocket endpoint for Expression Measurement (Face Model)
-const HUME_WS_URL = "wss://api.hume.ai/v0/stream/models?models=face"; 
+// Forward throttling (ms) — send latest frame every X ms
+const FORWARD_INTERVAL = 2000;
 
-/**
- * Initializes the WebSocket server and handles the 'upgrade' request to proxy
- * the client connection to the Hume AI streaming API.
- * @param {import('http').Server} server The Node.js HTTP server instance.
- */
+// Keepalive ping interval (ms)
+const PING_INTERVAL = 25000;
+
 export function createEmotionStreamServer(server) {
   const wss = new WebSocketServer({ noServer: true });
-  console.log("🧩 Emotion WebSocket proxy initialized at /api/emotion/stream");
+  console.log('🧩 Emotion WebSocket proxy initialized at /api/emotion/stream');
 
-  // Handle WebSocket upgrade requests initiated by the client
-  server.on("upgrade", (request, socket, head) => {
-    // Only process requests destined for this specific path
-    if (!request.url.startsWith("/api/emotion/stream")) return;
+  server.on('upgrade', (request, socket, head) => {
+    if (!request.url.startsWith('/api/emotion/stream')) return;
 
     const HUME_KEY = process.env.HUME_API_KEY;
     if (!HUME_KEY) {
-      console.error("❌ HUME_API_KEY missing in environment variables");
+      console.error('❌ HUME_API_KEY missing in environment variables');
       socket.destroy();
       return;
     }
 
-    // Upgrade the client's connection to a WebSocket
     wss.handleUpgrade(request, socket, head, (clientSocket) => {
-      // Pass the client socket to the proxy function
-      proxyClientToHume(clientSocket, HUME_KEY);
+      startProxyForClient(clientSocket, HUME_KEY);
     });
   });
 }
 
-
-/**
- * Establishes and manages the proxy connection between the client and Hume AI.
- * @param {WebSocket} clientSocket The established client WebSocket connection.
- * @param {string} HUME_KEY The Hume API key.
- */
-function proxyClientToHume(clientSocket, HUME_KEY) {
+function startProxyForClient(clientSocket, HUME_KEY) {
   let humeSocket = null;
+  let latestFrame = null;
+  let forwardTimer = null;
+  let pingTimer = null;
+  let reconnectAttempts = 0;
+  let closedByServer = false;
 
-  try {
-    // CRITICAL FIX: Use query parameter for WS auth, connecting directly to the endpoint.
-    // Also including 'models=face' to ensure the correct model is used for expression detection.
-    const humeUrlWithKey = `${HUME_WS_URL}&api_key=${HUME_KEY}`;
-    humeSocket = new WebSocket(humeUrlWithKey);
-
-    // ===================================
-    // 1. Hume Socket Event Listeners
-    // ===================================
-    
-    humeSocket.on("open", () => {
-      console.log("✅ Proxy: Successfully connected to Hume AI Expression API.");
+  // --- HUME WS CONNECTION ---
+  const connectToHume = () => {
+    const ws = new WebSocket(HUME_WS_URL, {
+      headers: { Authorization: `Bearer ${HUME_KEY}` },
     });
-    
-    humeSocket.on("error", (err) => {
-      console.error("❌ Hume WebSocket Error:", err.message);
-      // Close client connection gracefully with an error code
+
+    ws.on('open', () => {
+      console.log('✅ Connected to Hume WebSocket');
+      reconnectAttempts = 0;
+
+      // Ping keepalive
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.ping();
+      }, PING_INTERVAL);
+    });
+
+    ws.on('message', (data) => {
+      // Forward Hume messages directly to client
       if (clientSocket.readyState === WebSocket.OPEN) {
-        clientSocket.close(1011, "Hume API connection failed due to server error."); 
+        clientSocket.send(data);
       }
     });
 
-    // NOTE: For production, you must implement automatic reconnection logic on 'close'.
+    ws.on('close', (code, reason) => {
+      console.warn(`⚠️ Hume WS closed (code=${code}) reason=${reason?.toString() || ''}`);
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
 
-    // ===================================
-    // 2. Proxy Logic (Client <-> Hume)
-    // ===================================
-
-    // PROXY LOGIC: Client -> Hume (Forwarding camera data/control messages)
-    clientSocket.on("message", (msg) => {
-      if (humeSocket?.readyState === WebSocket.OPEN) {
-        humeSocket.send(msg); 
+      // Automatic exponential backoff reconnect
+      if (!closedByServer) {
+        reconnectAttempts++;
+        const delay = Math.min(1000 * 2 ** reconnectAttempts, 30000);
+        console.log(`⏳ Reconnecting to Hume in ${delay}ms (attempt ${reconnectAttempts})`);
+        setTimeout(() => {
+          humeSocket = connectToHume();
+        }, delay);
       }
     });
 
-    // PROXY LOGIC: Hume -> Client (Forwarding emotion data/results)
-    humeSocket.on("message", (data) => {
-      clientSocket.send(data);
-    });
-    
-    // ===================================
-    // 3. Closure Logic
-    // ===================================
+    ws.on('error', (err) => console.error('❌ Hume WS error:', err.message || err));
 
-    // If Hume closes, close the client
-    humeSocket.on("close", (code, reason) => {
-      console.log(`⚠️ Hume connection closed. Code: ${code}. Reason: ${reason.toString()}`);
-      clientSocket.close();
-    });
+    return ws;
+  };
 
-    // If client closes, close the Hume connection
-    clientSocket.on("close", () => {
-      console.log("🛑 Client connection closed. Closing Hume connection.");
-      humeSocket?.close();
-    });
+  humeSocket = connectToHume();
 
-  } catch (err) {
-    console.error("❌ Emotion stream proxy initial connection error:", err);
-    clientSocket.destroy();
+  // --- CLIENT WS HANDLING ---
+  clientSocket.on('message', (msg, isBinary) => {
+    try {
+      if (isBinary) {
+        // Only keep the latest frame
+        latestFrame = Buffer.from(msg);
+      } else {
+        // Handle text/control messages
+        const text = msg.toString();
+        let payload;
+        try { payload = JSON.parse(text); } catch { payload = null; }
+
+        if (payload?.type === 'control' && payload.action === 'stop') {
+          console.log('Client requested stop.');
+          cleanup();
+        } else {
+          console.log('Ignored client text message:', text.slice(0, 200));
+        }
+      }
+    } catch (err) {
+      console.error('❌ Error handling client message:', err);
+    }
+  });
+
+  clientSocket.on('close', () => {
+    console.log('🛑 Client disconnected.');
+    cleanup();
+  });
+
+  clientSocket.on('error', (err) => {
+    console.error('❌ Client socket error:', err);
+    cleanup();
+  });
+
+  // --- FRAME FORWARDING LOOP ---
+  forwardTimer = setInterval(() => {
+    try {
+      if (!latestFrame || !humeSocket || humeSocket.readyState !== WebSocket.OPEN) return;
+
+      humeSocket.send(latestFrame, { binary: true }, (err) => {
+        if (err) console.error('❌ Forward frame error:', err);
+      });
+
+      latestFrame = null;
+    } catch (err) {
+      console.error('❌ Forward loop error:', err);
+    }
+  }, FORWARD_INTERVAL);
+
+  // --- CLEANUP ---
+  function cleanup() {
+    closedByServer = true;
+
+    if (forwardTimer) { clearInterval(forwardTimer); forwardTimer = null; }
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    latestFrame = null;
+
+    try {
+      if (humeSocket && (humeSocket.readyState === WebSocket.OPEN || humeSocket.readyState === WebSocket.CONNECTING)) {
+        humeSocket.removeAllListeners?.();
+        humeSocket.close();
+      }
+    } catch {} 
+
+    try {
+      if (clientSocket && (clientSocket.readyState === WebSocket.OPEN || clientSocket.readyState === WebSocket.CONNECTING)) {
+        clientSocket.removeAllListeners?.();
+        clientSocket.close();
+      }
+    } catch {}
   }
 }

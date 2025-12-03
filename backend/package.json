@@ -5,7 +5,7 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
+    "start": "node server.js --keep-alive-timeout=30000",
     "dev": "nodemon server.js"
   },
   "dependencies": {
@@ -23,7 +23,9 @@
     "openai": "^4.77.3",
     "pg": "^8.10.0",
     "winston": "^3.17.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "http-proxy-agent": "^7.0.0",
+    "https-proxy-agent": "^7.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.7"
