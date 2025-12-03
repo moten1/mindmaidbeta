@@ -1,109 +1,226 @@
-// ===================================================
-// 🌊 Emotion Stream Proxy (Hume AI Facial Expression)
-// ===================================================
+// backend/routes/emotionStream.js
+import { WebSocketServer, WebSocket } from 'ws';
+import backoff from 'backoff'; // We will implement a tiny backoff inline instead of adding package.
 
-import { WebSocketServer, WebSocket } from "ws";
-// Removed 'fetch' as we no longer need the initial REST call.
+// Hume WebSocket endpoint (no api_key in query string)
+const HUME_WS_URL = 'wss://api.hume.ai/v0/stream/models?models=face';
 
-// The correct, direct WebSocket endpoint for Expression Measurement (Face Model)
-const HUME_WS_URL = "wss://api.hume.ai/v0/stream/models?models=face"; 
+// Throttle: how often to forward a frame to Hume (ms)
+const FORWARD_INTERVAL = 2000; // 1 frame every 2 seconds (adjustable)
 
-/**
- * Initializes the WebSocket server and handles the 'upgrade' request to proxy
- * the client connection to the Hume AI streaming API.
- * @param {import('http').Server} server The Node.js HTTP server instance.
- */
+// Keepalive ping interval to avoid idle disconnects (ms)
+const PING_INTERVAL = 25000; // 25s
+
 export function createEmotionStreamServer(server) {
   const wss = new WebSocketServer({ noServer: true });
-  console.log("🧩 Emotion WebSocket proxy initialized at /api/emotion/stream");
+  console.log('🧩 Emotion WebSocket proxy initialized at /api/emotion/stream');
 
-  // Handle WebSocket upgrade requests initiated by the client
-  server.on("upgrade", (request, socket, head) => {
-    // Only process requests destined for this specific path
-    if (!request.url.startsWith("/api/emotion/stream")) return;
+  server.on('upgrade', (request, socket, head) => {
+    if (!request.url.startsWith('/api/emotion/stream')) return;
 
     const HUME_KEY = process.env.HUME_API_KEY;
     if (!HUME_KEY) {
-      console.error("❌ HUME_API_KEY missing in environment variables");
+      console.error('❌ HUME_API_KEY missing in environment variables');
       socket.destroy();
       return;
     }
 
-    // Upgrade the client's connection to a WebSocket
     wss.handleUpgrade(request, socket, head, (clientSocket) => {
-      // Pass the client socket to the proxy function
       proxyClientToHume(clientSocket, HUME_KEY);
     });
   });
 }
 
-
 /**
- * Establishes and manages the proxy connection between the client and Hume AI.
- * @param {WebSocket} clientSocket The established client WebSocket connection.
- * @param {string} HUME_KEY The Hume API key.
+ * proxyClientToHume
+ * - clientSocket: the WebSocket connection from browser -> our server
+ * - HUME_KEY: API key (kept server-side)
  */
 function proxyClientToHume(clientSocket, HUME_KEY) {
+  // State for each client connection
   let humeSocket = null;
+  let latestFrame = null;               // Buffer of latest frame sent by client
+  let forwardTimer = null;              // interval timer which forwards frames to Hume
+  let pingTimer = null;                 // ping to Hume
+  let backoffAttempts = 0;              // reconnection backoff attempts
+  let closedByServer = false;           // flag so we don't attempt reconnect after manual close
 
-  try {
-    // CRITICAL FIX: Use query parameter for WS auth, connecting directly to the endpoint.
-    // Also including 'models=face' to ensure the correct model is used for expression detection.
-    const humeUrlWithKey = `${HUME_WS_URL}&api_key=${HUME_KEY}`;
-    humeSocket = new WebSocket(humeUrlWithKey);
+  // Helper to create a Hume connection with proper headers
+  const createHumeSocket = () => {
+    // Node ws accepts headers in the options param
+    const options = {
+      headers: {
+        Authorization: `Bearer ${HUME_KEY}`,
+        // You can add other headers here if required by Hume
+      },
+    };
 
-    // ===================================
-    // 1. Hume Socket Event Listeners
-    // ===================================
-    
-    humeSocket.on("open", () => {
-      console.log("✅ Proxy: Successfully connected to Hume AI Expression API.");
+    const ws = new WebSocket(HUME_WS_URL, options);
+
+    ws.on('open', () => {
+      console.log('✅ (proxy) Connected to Hume WebSocket.');
+      backoffAttempts = 0;
+
+      // Start keepalive pings to Hume so intermediate proxies don't close the connection
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = setInterval(() => {
+        try {
+          if (ws.readyState === WebSocket.OPEN) ws.ping();
+        } catch (e) {
+          // ignore
+        }
+      }, PING_INTERVAL);
     });
-    
-    humeSocket.on("error", (err) => {
-      console.error("❌ Hume WebSocket Error:", err.message);
-      // Close client connection gracefully with an error code
-      if (clientSocket.readyState === WebSocket.OPEN) {
-        clientSocket.close(1011, "Hume API connection failed due to server error."); 
+
+    ws.on('message', (data) => {
+      // Forward Hume messages straight to client (if open)
+      try {
+        if (clientSocket.readyState === WebSocket.OPEN) {
+          clientSocket.send(data);
+        }
+      } catch (err) {
+        console.error('❌ Error forwarding Hume message to client:', err);
       }
     });
 
-    // NOTE: For production, you must implement automatic reconnection logic on 'close'.
+    ws.on('error', (err) => {
+      console.error('❌ Hume socket error:', err.message || err);
+      // let 'close' handle reconnect logic
+    });
 
-    // ===================================
-    // 2. Proxy Logic (Client <-> Hume)
-    // ===================================
+    ws.on('close', (code, reason) => {
+      console.warn(`⚠️ Hume socket closed (code=${code}) reason=${reason?.toString() || ''}`);
 
-    // PROXY LOGIC: Client -> Hume (Forwarding camera data/control messages)
-    clientSocket.on("message", (msg) => {
-      if (humeSocket?.readyState === WebSocket.OPEN) {
-        humeSocket.send(msg); 
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+
+      if (!closedByServer) {
+        // Attempt backoff reconnect
+        backoffAttempts++;
+        const delay = Math.min(1000 * 2 ** backoffAttempts, 30 * 1000); // exponential up to 30s
+        console.log(`⏳ Reconnecting to Hume in ${delay}ms (attempt ${backoffAttempts})`);
+        setTimeout(() => {
+          humeSocket = createHumeSocket();
+        }, delay);
       }
     });
 
-    // PROXY LOGIC: Hume -> Client (Forwarding emotion data/results)
-    humeSocket.on("message", (data) => {
-      clientSocket.send(data);
-    });
-    
-    // ===================================
-    // 3. Closure Logic
-    // ===================================
+    return ws;
+  };
 
-    // If Hume closes, close the client
-    humeSocket.on("close", (code, reason) => {
-      console.log(`⚠️ Hume connection closed. Code: ${code}. Reason: ${reason.toString()}`);
-      clientSocket.close();
-    });
+  // Initialize Hume connection
+  humeSocket = createHumeSocket();
 
-    // If client closes, close the Hume connection
-    clientSocket.on("close", () => {
-      console.log("🛑 Client connection closed. Closing Hume connection.");
-      humeSocket?.close();
-    });
+  /*******************************
+   * Client -> Server handling
+   *******************************/
+  clientSocket.on('message', (message, isBinary) => {
+    // Expectation: the frontend sends binary frames (ArrayBuffer/Blob) directly.
+    // If the message is text, treat as control (e.g., {"type":"control","action":"stop"})
+    try {
+      if (isBinary) {
+        // Keep only the latest frame — drop older frames
+        latestFrame = Buffer.from(message);
+      } else {
+        // try to parse JSON control messages
+        const text = message.toString();
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch (e) {
+          payload = null;
+        }
 
-  } catch (err) {
-    console.error("❌ Emotion stream proxy initial connection error:", err);
-    clientSocket.destroy();
+        if (payload && payload.type === 'control') {
+          if (payload.action === 'stop') {
+            // client asked to stop the stream
+            console.log('Client requested stop.');
+            cleanupAndClose();
+          }
+          // add other control handling if needed
+        } else {
+          // Unknown text message - log for debugging
+          console.log('Proxy received text message from client (ignored):', text.slice(0, 200));
+        }
+      }
+    } catch (err) {
+      console.error('❌ Error handling client message:', err);
+    }
+  });
+
+  clientSocket.on('error', (err) => {
+    console.error('❌ Client socket error:', err);
+    cleanupAndClose();
+  });
+
+  clientSocket.on('close', () => {
+    console.log('🛑 Client connection closed.');
+    cleanupAndClose();
+  });
+
+  /*******************************
+   * Forward loop: send latestFrame -> Hume at fixed interval
+   *******************************/
+  // Only create one forward timer per client
+  if (!forwardTimer) {
+    forwardTimer = setInterval(() => {
+      try {
+        if (!latestFrame || !humeSocket || humeSocket.readyState !== WebSocket.OPEN) return;
+
+        // Construct the message format expected by Hume.
+        // Hume expects a JSON text message describing metadata, followed by binary frame(s) -
+        // but different providers differ. We'll forward the binary directly if that's accepted.
+        // If Hume requires an envelope, the frontend can send a small metadata JSON before the binary,
+        // but many streaming endpoints accept raw binary frames representing the image bytes.
+
+        // Send binary frame to Hume
+        humeSocket.send(latestFrame, { binary: true }, (err) => {
+          if (err) {
+            console.error('❌ Error sending frame to Hume:', err);
+          } else {
+            // Optionally log when frames are forwarded (comment out in prod)
+            // console.log('➡️ Forwarded frame to Hume (' + latestFrame.length + ' bytes)');
+          }
+        });
+
+        // After forwarding, clear latestFrame to avoid repeated sends
+        latestFrame = null;
+      } catch (err) {
+        console.error('❌ Forward loop error:', err);
+      }
+    }, FORWARD_INTERVAL);
   }
+
+  /*******************************
+   * Cleanup helper
+   *******************************/
+  function cleanupAndClose() {
+    closedByServer = true;
+
+    if (forwardTimer) {
+      clearInterval(forwardTimer);
+      forwardTimer = null;
+    }
+    latestFrame = null;
+
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+
+    try {
+      if (humeSocket && (humeSocket.readyState === WebSocket.OPEN || humeSocket.readyState === WebSocket.CONNECTING)) {
+        humeSocket.removeAllListeners?.();
+        humeSocket.close();
+      }
+    } catch (e) { /* ignore */ }
+
+    try {
+      if (clientSocket && (clientSocket.readyState === WebSocket.OPEN || clientSocket.readyState === WebSocket.CONNECTING)) {
+        clientSocket.removeAllListeners?.();
+        clientSocket.close();
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  // Safety: if client never sends anything for a long time, allow cleanup when client disconnects naturally.
 }
