@@ -47,3 +47,4 @@ jobs:
           context: ./frontend
           push: true
           tags: ${{ secrets.DOCKER_HUB_USERNAME }}/mindmaid-frontend:latest
+ 
