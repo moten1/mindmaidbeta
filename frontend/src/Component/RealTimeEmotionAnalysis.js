@@ -1,16 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 
 const WS_URL = process.env.REACT_APP_API_URL_WS || 'ws://localhost:5000/api/emotion/stream';
-const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-const MIN_FPS = 1; // min frame per second when emotions stable
-const MAX_FPS = 20; // max FPS when emotions change rapidly
-const FPS_STEP = 2; // increment/decrement FPS
+const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 min
+const MIN_FPS = 1;
+const MAX_FPS = 20;
+const FPS_STEP = 2;
 
-export default function LiveEmotionStreamAdaptive() {
+export default function EmotionDrivenDashboard() {
   const [currentEmotion, setCurrentEmotion] = useState(null);
   const [emotionHistory, setEmotionHistory] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [fps, setFps] = useState(5); // start FPS
+  const [fps, setFps] = useState(5);
   const [bandwidth, setBandwidth] = useState('Medium');
 
   const videoRef = useRef(null);
@@ -19,8 +19,9 @@ export default function LiveEmotionStreamAdaptive() {
   const inactivityTimerRef = useRef(null);
   const captureIntervalRef = useRef(null);
   const lastEmotionRef = useRef(null);
+  const userLocationRef = useRef(null);
 
-  // --- CAMERA SETUP ---
+  // --- Camera setup ---
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -41,13 +42,13 @@ export default function LiveEmotionStreamAdaptive() {
     }
   };
 
-  // --- INACTIVITY TIMER ---
+  // --- Inactivity Timer ---
   const resetInactivityTimer = () => {
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     inactivityTimerRef.current = setTimeout(() => stopStreaming(), INACTIVITY_TIMEOUT);
   };
 
-  // --- FPS ADAPTATION ---
+  // --- Adaptive FPS ---
   const adjustFPS = (emotionChanged) => {
     setFps(prev => {
       let newFps = prev;
@@ -56,15 +57,13 @@ export default function LiveEmotionStreamAdaptive() {
         setBandwidth('High');
       } else {
         newFps = Math.max(prev - 0.5, MIN_FPS);
-        if (newFps <= 2) setBandwidth('Low');
-        else if (newFps <= 10) setBandwidth('Medium');
-        else setBandwidth('High');
+        setBandwidth(newFps <= 2 ? 'Low' : newFps <= 10 ? 'Medium' : 'High');
       }
       return newFps;
     });
   };
 
-  // --- WEBSOCKET STREAM ---
+  // --- WebSocket streaming ---
   const startStreaming = async () => {
     await startCamera();
 
@@ -72,16 +71,26 @@ export default function LiveEmotionStreamAdaptive() {
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
-      console.log('✅ Connected to Hume WS stream');
+      console.log('✅ Connected to WS stream');
       setIsStreaming(true);
+
+      // Send location if available
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(pos => {
+          const loc = { type: "location", lat: pos.coords.latitude, lng: pos.coords.longitude };
+          userLocationRef.current = loc;
+          ws.send(JSON.stringify(loc));
+        });
+      }
     };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.dominantEmotion) {
-          const emotionChanged = lastEmotionRef.current !== data.dominantEmotion;
-          lastEmotionRef.current = data.dominantEmotion;
+
+        if (data.emotion) {
+          const emotionChanged = lastEmotionRef.current !== data.emotion;
+          lastEmotionRef.current = data.emotion;
 
           setCurrentEmotion(data);
           adjustFPS(emotionChanged);
@@ -98,7 +107,6 @@ export default function LiveEmotionStreamAdaptive() {
     };
 
     ws.onerror = (err) => console.error('WebSocket error:', err);
-
     ws.onclose = () => {
       console.log('⚠️ WebSocket closed');
       setIsStreaming(false);
@@ -106,10 +114,9 @@ export default function LiveEmotionStreamAdaptive() {
 
     wsRef.current = ws;
 
-    // --- CONTINUOUS FRAME CAPTURE ---
+    // --- Frame capture ---
     const captureFrames = () => {
       if (!videoRef.current || ws.readyState !== WebSocket.OPEN) return;
-
       const canvas = document.createElement('canvas');
       canvas.width = videoRef.current.videoWidth;
       canvas.height = videoRef.current.videoHeight;
@@ -120,11 +127,10 @@ export default function LiveEmotionStreamAdaptive() {
       }, 'image/jpeg', 0.8);
     };
 
-    // Start interval
     captureIntervalRef.current = setInterval(captureFrames, 1000 / fps);
   };
 
-  // Update interval dynamically
+  // --- Update interval dynamically ---
   useEffect(() => {
     if (captureIntervalRef.current && isStreaming) {
       clearInterval(captureIntervalRef.current);
@@ -150,7 +156,7 @@ export default function LiveEmotionStreamAdaptive() {
     setIsStreaming(false);
   };
 
-  // --- INACTIVITY EVENT LISTENERS ---
+  // --- Inactivity event listeners ---
   useEffect(() => {
     const events = ['mousemove', 'keydown', 'touchstart'];
     events.forEach(evt => window.addEventListener(evt, resetInactivityTimer));
@@ -164,8 +170,8 @@ export default function LiveEmotionStreamAdaptive() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-4xl font-extrabold text-gray-800">Live Emotion Stream</h1>
-      <p className="text-lg text-gray-600">Continuous AI-powered facial emotion detection with adaptive bandwidth.</p>
+      <h1 className="text-4xl font-extrabold text-gray-800">Emotion Dashboard</h1>
+      <p className="text-lg text-gray-600">Live emotion detection with AI recommendations for outfit, music, and food.</p>
 
       <div className="bg-white p-6 rounded-lg shadow-md flex flex-col items-center gap-4">
         <video ref={videoRef} autoPlay playsInline className="w-full max-w-md rounded-lg border-2 border-gray-300" />
@@ -174,25 +180,28 @@ export default function LiveEmotionStreamAdaptive() {
           <div className="mt-4 w-full max-w-md space-y-2">
             <div className="p-4 bg-yellow-50 rounded-lg">
               <p className="font-semibold text-gray-800">Detected Mood:</p>
-              <p className="text-xl text-yellow-700">{currentEmotion.dominantEmotion}</p>
+              <p className="text-xl text-yellow-700">{currentEmotion.emotion}</p>
             </div>
 
-            {currentEmotion.emotions && (
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="font-semibold text-gray-800 mb-2">Emotion Breakdown:</p>
-                {Object.entries(currentEmotion.emotions).map(([emo, score]) => (
-                  <div key={emo} className="flex justify-between mb-1">
-                    <span className="capitalize">{emo}</span>
-                    <span className="text-gray-600">{(score * 100).toFixed(1)}%</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            {currentEmotion.recommendations && (
+              <div className="p-4 bg-blue-50 rounded-lg mt-2 space-y-2">
+                <p className="font-semibold text-gray-800">AI Recommendations:</p>
+                <p>Outfit: {currentEmotion.recommendations.outfit}</p>
+                <p>Music: {currentEmotion.recommendations.music}</p>
+                <p>Food: {currentEmotion.recommendations.food}</p>
 
-            {currentEmotion.recommendation && (
-              <div className="p-4 bg-blue-50 rounded-lg mt-2">
-                <p className="font-semibold text-gray-800 mb-2">AI Recommendation:</p>
-                <p className="text-gray-700">{currentEmotion.recommendation}</p>
+                {currentEmotion.recommendations.nearbyRestaurants?.length > 0 && (
+                  <div>
+                    <p className="font-semibold mt-2">Nearby Restaurants:</p>
+                    <ul className="list-disc list-inside">
+                      {currentEmotion.recommendations.nearbyRestaurants.map((r, idx) => (
+                        <li key={idx}>
+                          {r.name} — {r.address} ({r.rating || 'N/A'} ⭐)
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -219,7 +228,7 @@ export default function LiveEmotionStreamAdaptive() {
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {emotionHistory.map((item, idx) => (
               <div key={idx} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                <span className="capitalize font-medium">{item.dominantEmotion}</span>
+                <span className="capitalize font-medium">{item.emotion}</span>
                 <span className="text-xs text-gray-400">{item.timestamp}</span>
               </div>
             ))}

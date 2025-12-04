@@ -1,64 +1,168 @@
-// backend/routes/emotionRoutes.js
-// ========================================
-// 🔥 FINAL FIXED VERSION — WORKS WITH CAMERA
-// ========================================
+// backend/emotionProxy.js
+// ============================================
+// 🔥 MindMaid Emotion Stream + Real-time Recommendations
+// ============================================
 
-import express from "express";
-import multer from "multer";
+import { WebSocketServer, WebSocket } from "ws";
 import axios from "axios";
-import dotenv from "dotenv";
 
-dotenv.config();
+const HUME_WS_URL = "wss://api.hume.ai/v0/stream/models?models=face";
+const FORWARD_INTERVAL = 2000; // send frame every 2s
+const PING_INTERVAL = 25000;    // Hume keepalive
 
-const router = express.Router();
+export function createEmotionStreamServer(server) {
+  const wss = new WebSocketServer({ noServer: true });
+  console.log("🧩 Emotion WebSocket proxy initialized at /api/emotion/stream");
 
-// Multer memory storage (no disk writing)
-const upload = multer({ storage: multer.memoryStorage() });
+  server.on("upgrade", (request, socket, head) => {
+    if (!request.url.startsWith("/api/emotion/stream")) return;
 
-// ------------------------------------
-// POST /api/emotion/analyze
-// ------------------------------------
-router.post("/analyze", upload.single("frame"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No frame received" });
+    const HUME_KEY = process.env.HUME_API_KEY;
+    if (!HUME_KEY) {
+      console.error("❌ HUME_API_KEY missing");
+      socket.destroy();
+      return;
     }
 
-    // Convert buffer -> base64
-    const base64Image = req.file.buffer.toString("base64");
-
-    // 🔥 Send to your AI model (OpenAI or Google)
-    const response = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4.1-mini",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "input_image", image_url: `data:image/jpeg;base64,${base64Image}` },
-              { type: "text", text: "Analyze the facial emotion. Reply with: happy/sad/stress/neutral/angry only." }
-            ]
-          }
-        ]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-      }
-    );
-
-    const emotion = response.data.choices?.[0]?.message?.content || "unknown";
-
-    res.json({
-      success: true,
-      emotion
+    wss.handleUpgrade(request, socket, head, (clientSocket) => {
+      handleClient(clientSocket, HUME_KEY);
     });
-  } catch (err) {
-    console.error("❌ Emotion analysis error:", err?.response?.data || err);
-    res.status(500).json({ error: "Emotion detection failed" });
-  }
-});
+  });
+}
 
-export default router;
+async function getNearbyRestaurants(lat, lng, query = "restaurant") {
+  try {
+    const res = await axios.get("https://maps.googleapis.com/maps/api/place/nearbysearch/json", {
+      params: {
+        key: process.env.GOOGLE_MAPS_API_KEY,
+        location: `${lat},${lng}`,
+        radius: 5000,
+        type: "restaurant",
+        keyword: query,
+      },
+    });
+    return res.data.results.map(r => ({
+      name: r.name,
+      address: r.vicinity,
+      rating: r.rating,
+    }));
+  } catch (err) {
+    console.error("❌ Google Places error:", err?.response?.data || err);
+    return [];
+  }
+}
+
+function handleClient(clientSocket, HUME_KEY) {
+  let humeSocket = null;
+  let latestFrame = null;
+  let forwardTimer = null;
+  let pingTimer = null;
+  let closedByServer = false;
+
+  let userLocation = null;
+
+  const createHumeSocket = () => {
+    const ws = new WebSocket(HUME_WS_URL, { headers: { Authorization: `Bearer ${HUME_KEY}` } });
+
+    ws.on("open", () => {
+      console.log("✅ Connected to Hume WebSocket");
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.ping();
+      }, PING_INTERVAL);
+    });
+
+    ws.on("message", async (data) => {
+      if (clientSocket.readyState !== WebSocket.OPEN) return;
+
+      try {
+        let payload = JSON.parse(data.toString());
+        let emotion = payload.emotion || payload?.data?.face?.emotion || "unknown";
+
+        let nearbyRestaurants = [];
+        if (userLocation) {
+          nearbyRestaurants = await getNearbyRestaurants(
+            userLocation.lat,
+            userLocation.lng,
+            emotionToFood(emotion)
+          );
+        }
+
+        clientSocket.send(JSON.stringify({
+          type: "recommendations",
+          emotion,
+          recommendations: {
+            outfit: emotionToOutfit(emotion),
+            music: emotionToMusic(emotion),
+            food: emotionToFood(emotion),
+            nearbyRestaurants
+          }
+        }));
+      } catch (err) {
+        console.error("❌ Error processing Hume message:", err);
+      }
+    });
+
+    ws.on("close", () => {
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+      if (!closedByServer) setTimeout(() => { humeSocket = createHumeSocket(); }, 5000);
+    });
+
+    ws.on("error", (err) => console.error("❌ Hume socket error:", err));
+    return ws;
+  };
+
+  humeSocket = createHumeSocket();
+
+  clientSocket.on("message", (msg, isBinary) => {
+    try {
+      if (isBinary) {
+        latestFrame = Buffer.from(msg);
+      } else {
+        const data = JSON.parse(msg.toString());
+        if (data.type === "location") {
+          userLocation = { lat: data.lat, lng: data.lng };
+        } else if (data.type === "control" && data.action === "stop") {
+          cleanup();
+        }
+      }
+    } catch (err) {
+      console.error("❌ Client message error:", err);
+    }
+  });
+
+  clientSocket.on("close", cleanup);
+  clientSocket.on("error", cleanup);
+
+  forwardTimer = setInterval(() => {
+    if (!latestFrame || !humeSocket || humeSocket.readyState !== WebSocket.OPEN) return;
+    humeSocket.send(latestFrame, { binary: true });
+    latestFrame = null;
+  }, FORWARD_INTERVAL);
+
+  function cleanup() {
+    closedByServer = true;
+    if (forwardTimer) clearInterval(forwardTimer);
+    if (pingTimer) clearInterval(pingTimer);
+    try { if (humeSocket) humeSocket.close(); } catch(e){}
+    try { if (clientSocket) clientSocket.close(); } catch(e){}
+  }
+}
+
+// =======================
+// Helper recommendation functions
+// =======================
+function emotionToOutfit(emotion) {
+  const map = { happy: "Bright casual outfit", sad: "Cozy sweater", neutral: "Smart casual", angry: "Dark tones", stress: "Comfort wear" };
+  return map[emotion] || "Comfort wear";
+}
+
+function emotionToMusic(emotion) {
+  const map = { happy: "Upbeat pop", sad: "Soft jazz", neutral: "Ambient", angry: "Rock", stress: "Lo-fi chill" };
+  return map[emotion] || "Ambient";
+}
+
+function emotionToFood(emotion) {
+  const map = { happy: "Fruit salad", sad: "Chocolate", neutral: "Sandwich", angry: "Spicy curry", stress: "Smoothie" };
+  return map[emotion] || "Snack";
+}
