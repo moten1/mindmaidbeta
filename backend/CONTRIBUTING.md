@@ -1,0 +1,1 @@
+# Contributing\n\n- Run backend: cd backend && npm install && npm run dev\n- Run frontend: cd frontend && npm install && npm start\n- Use docker-compose for local testing: docker-compose up --build\n

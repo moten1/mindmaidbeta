@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: mindmaid-backend
+    env: node
+    plan: free
+    rootDir: backend
+    buildCommand: "npm install"
+    startCommand: "node server.js"
+    envVars: []
+    healthCheckPath: "/api/health"
+    autoDeploy: true
+    regions:
+      - oregon
+    instanceType: "starter"
+
+  - type: web
+    name: mindmaid-frontend
+    env: static
+    rootDir: frontend
+    plan: free
+    buildCommand: "npm install && npm run build"
+    staticPublishPath: build
+    envVars: []
+    autoDeploy: true
+    regions:
+      - oregon

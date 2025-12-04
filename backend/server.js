@@ -1,6 +1,6 @@
 // backend/server.js
 // ============================================
-// 🌟 MindMaid Backend Server (Production-ready)
+// 🌟 MindMaid Backend Server (Stable Production Build)
 // ============================================
 
 import express from "express";
@@ -13,11 +13,10 @@ import fs from "fs";
 import http from "http";
 import { fileURLToPath, pathToFileURL } from "url";
 
-// Import the WebSocket proxy (place emotionProxy.js in backend/)
 import { createEmotionStreamServer } from "./emotionProxy.js";
 
 // -----------------------------
-// ESM __dirname fix
+// Paths
 // -----------------------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,55 +24,23 @@ const __dirname = path.dirname(__filename);
 // -----------------------------
 // Load env
 // -----------------------------
-dotenv.config(); // Load .env (Render & other platforms override)
-console.log("✅ Env loaded");
+dotenv.config();
+console.log("🌱 Environment loaded");
 
 // -----------------------------
-// Config / Required keys
-// -----------------------------
-const REQUIRED_KEYS = [
-  "HUME_API_KEY",
-  "SPOONACULAR_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "OPENROUTER_API_KEY",
-];
-
-const missing = REQUIRED_KEYS.filter((k) => !process.env[k]);
-if (missing.length) {
-  console.warn(`⚠️ Missing env vars (not fatal): ${missing.join(", ")}`);
-}
-
-// -----------------------------
-// App + server
+// Express App
 // -----------------------------
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
 const NODE_ENV = process.env.NODE_ENV || "production";
 
 // -----------------------------
-// CORS (allow frontend + localhost dev)
+// CORS (very permissive & Render-safe)
 // -----------------------------
-const allowedOrigins = [
-  "https://mindmaidbeta-frontend.onrender.com",
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://mindmaid.app",
-  "https://www.mindmaid.app"
-];
-
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // allow non-browser (curl, Postman) calls with no origin
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-
-      console.warn(`⚠️ CORS blocked origin: ${origin}`);
-      return callback(new Error("CORS policy violation"), false);
-    },
+    origin: true,
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
   })
 );
 
@@ -85,58 +52,50 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
 
-// Security headers (basic)
 app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("X-Content-Type-Options", "nosniff");
   next();
 });
 
 // -----------------------------
-// Health check
+// Health Route
 // -----------------------------
 app.get("/api/health", (req, res) => {
   res.json({
-    status: "ok",
-    uptime_seconds: Math.floor(process.uptime()),
-    timestamp: new Date().toISOString(),
-    environment: NODE_ENV,
+    ok: true,
+    uptime: Math.floor(process.uptime()),
+    env: NODE_ENV,
     port: PORT,
-    apis: Object.fromEntries(REQUIRED_KEYS.map((k) => [k, !!process.env[k]])),
-    memory: {
-      heapUsedMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-      heapTotalMB: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
-    },
+    timestamp: new Date().toISOString(),
   });
 });
 
 // -----------------------------
-// Dynamic route loader
+// Route Loader
 // -----------------------------
 const ROUTES = [
-  { path: "/api/auth", file: "./routes/authRoutes.js" },
-  { path: "/api/user", file: "./routes/userRoutes.js" },
-  { path: "/api/feedback", file: "./routes/feedbackRoutes.js" },
-  { path: "/api/sessions", file: "./routes/sessionRoutes.js" },
-  { path: "/api/ai", file: "./routes/aiRoutes.js" },
-  { path: "/api/emotion", file: "./routes/emotionRoutes.js" },
+  { p: "/api/auth", f: "./routes/authRoutes.js" },
+  { p: "/api/user", f: "./routes/userRoutes.js" },
+  { p: "/api/feedback", f: "./routes/feedbackRoutes.js" },
+  { p: "/api/sessions", f: "./routes/sessionRoutes.js" },
+  { p: "/api/ai", f: "./routes/aiRoutes.js" },
+  { p: "/api/emotion", f: "./routes/emotionRoutes.js" },
 ];
 
 const loadRoutes = async () => {
-  for (const { path: routePath, file } of ROUTES) {
-    const full = path.join(__dirname, file);
-    if (!fs.existsSync(full)) {
-      console.warn(`⚠️ Route file missing: ${file} (skipping)`);
+  for (const r of ROUTES) {
+    const fullPath = path.join(__dirname, r.f);
+    if (!fs.existsSync(fullPath)) {
+      console.warn(`⚠️ Missing route: ${r.f}`);
       continue;
     }
     try {
-      const mod = await import(pathToFileURL(full).href);
-      const router = mod.default || mod;
-      app.use(routePath, router);
-      console.log(`✅ Route mounted: ${routePath}`);
+      const mod = await import(pathToFileURL(fullPath).href);
+      app.use(r.p, mod.default || mod);
+      console.log(`📌 Loaded route: ${r.p}`);
     } catch (err) {
-      console.error(`❌ Failed loading route ${file}:`, err.message || err);
+      console.error(`❌ Failed route load: ${r.f}`, err);
     }
   }
 };
@@ -144,95 +103,74 @@ const loadRoutes = async () => {
 await loadRoutes();
 
 // -----------------------------
-// Serve frontend build (if present)
+// Frontend Build Serve
 // -----------------------------
-const buildDir = path.resolve(__dirname, "../frontend/build");
-const indexHtml = path.join(buildDir, "index.html");
+const buildPath = path.resolve(__dirname, "../frontend/build");
+const indexPath = path.join(buildPath, "index.html");
 
-if (fs.existsSync(buildDir)) {
-  app.use(express.static(buildDir, { maxAge: "1d" }));
+if (fs.existsSync(buildPath)) {
+  console.log("🎨 Serving frontend build...");
 
-  // SPA fallback for non-API GET requests
-  app.get("*", (req, res, next) => {
-    if (req.path.startsWith("/api")) return next();
-    res.sendFile(indexHtml);
+  app.use(express.static(buildPath));
+
+  // Fallback only for non-API routes
+  app.get("*", (req, res) => {
+    if (req.url.startsWith("/api")) return res.status(404).json({ error: "Not found" });
+    return res.sendFile(indexPath);
   });
-
-  console.log(`✅ Serving frontend build from ${buildDir}`);
 } else {
-  console.warn("⚠️ Frontend build not found — frontend/static will not be served.");
+  console.warn("⚠️ No frontend build found.");
 }
 
 // -----------------------------
-// API 404 handler
-// -----------------------------
-app.use("/api", (req, res) =>
-  res.status(404).json({ ok: false, error: "API route not found" })
-);
-
-// -----------------------------
-// Global error handler
-// -----------------------------
-app.use((err, req, res, next) => {
-  console.error("❌ Unhandled error:", err.stack || err.message || err);
-  const status = err.statusCode || 500;
-  res.status(status).json({
-    ok: false,
-    error: NODE_ENV === "production" ? "Internal server error" : err.message,
-    ...(NODE_ENV === "development" ? { stack: err.stack } : {}),
-  });
-});
-
-// -----------------------------
-// HTTP + WebSocket server setup
+// Create HTTP Server
 // -----------------------------
 const server = http.createServer(app);
 
-// Attach WebSocket proxy BEFORE listening
+// -----------------------------
+// IMPORTANT: Initialize WS Proxy BEFORE listen()
+// -----------------------------
 try {
   createEmotionStreamServer(server);
-  console.log("🧩 Emotion websocket proxy initialized");
+  console.log("🔌 Hume Emotion WebSocket Proxy Ready");
 } catch (e) {
-  console.error("❌ Failed to initialize emotion stream proxy:", e);
+  console.error("❌ WS Proxy Error:", e);
 }
 
 // -----------------------------
-// Start server
+// Start Server
 // -----------------------------
 server.listen(PORT, "0.0.0.0", () => {
   console.log("============================================");
-  console.log(`🚀 MindMaid Backend Running`);
+  console.log("🚀 MindMaid Backend Online");
   console.log(`📡 Port: ${PORT}`);
-  console.log(`🌍 Environment: ${NODE_ENV}`);
-  console.log(`🎨 Frontend build: ${fs.existsSync(buildDir) ? "yes" : "no"}`);
-  console.log(`🔗 CORS allowed origins: ${allowedOrigins.length}`);
+  console.log(`🌍 Env: ${NODE_ENV}`);
+  console.log(`🖥 Serving Frontend: ${fs.existsSync(buildPath) ? "YES" : "NO"}`);
   console.log("============================================");
 });
 
 // -----------------------------
-// Graceful shutdown
+// Graceful Shutdown
 // -----------------------------
 const shutdown = (signal) => {
-  console.log(`\n${signal} received — shutting down...`);
+  console.log(`\n${signal} received — closing server...`);
   server.close(() => {
-    console.log("✅ HTTP server closed");
+    console.log("⚡ Server closed gracefully");
     process.exit(0);
   });
-
   setTimeout(() => {
-    console.error("⚠️ Forced exit");
+    console.warn("⏱ Forced shutdown");
     process.exit(1);
-  }, 10000);
+  }, 8000);
 };
 
-["SIGTERM", "SIGINT"].forEach((s) => process.on(s, () => shutdown(s)));
+["SIGTERM", "SIGINT"].forEach((sig) =>
+  process.on(sig, () => shutdown(sig))
+);
 
-process.on("uncaughtException", (err) => {
-  console.error("❌ Uncaught Exception:", err);
-  shutdown("uncaughtException");
+process.on("unhandledRejection", (r) => {
+  console.error("❌ Unhandled Rejection:", r);
 });
-
-process.on("unhandledRejection", (reason, p) => {
-  console.error("❌ Unhandled Rejection:", p, reason);
-  shutdown("unhandledRejection");
+process.on("uncaughtException", (e) => {
+  console.error("❌ Uncaught Exception:", e);
 });
