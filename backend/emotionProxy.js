@@ -5,6 +5,8 @@
 import { WebSocketServer, WebSocket } from "ws";
 
 const HUME_WS_URL = "wss://api.hume.ai/v0/stream/models?models=face";
+const HEARTBEAT_INTERVAL_MS = 30000; // Send ping every 30 seconds
+const RECONNECT_BASE_DELAY_MS = 1000; // Initial reconnect delay
 
 export function createEmotionStreamServer(server) {
   const wss = new WebSocketServer({ noServer: true });
@@ -27,21 +29,31 @@ export function createEmotionStreamServer(server) {
 }
 
 // --------------------------------------------
-// 🔄 Proxy: Client ↔ Hume AI
+// 🔄 Proxy: Client ↔ Hume AI with reconnect & heartbeat
 // --------------------------------------------
 function proxyEmotionStream(clientSocket, HUME_KEY) {
-  const url = `${HUME_WS_URL}&api_key=${HUME_KEY}`;
   let humeSocket;
+  let heartbeatTimer;
+  let reconnectDelay = RECONNECT_BASE_DELAY_MS;
 
-  try {
-    // Connect to Hume AI WS
+  function connectHume() {
+    const url = `${HUME_WS_URL}&api_key=${HUME_KEY}&inactivity_timeout=300`; // increase inactivity timeout
+    console.log("🌐 Connecting to Hume AI WS...");
     humeSocket = new WebSocket(url);
 
-    // -------------------------
-    // HUME → CLIENT
-    // -------------------------
     humeSocket.on("open", () => {
       console.log("✅ Connected to Hume AI Face Model Stream");
+      reconnectDelay = RECONNECT_BASE_DELAY_MS;
+
+      // Start heartbeat to prevent inactivity disconnect
+      heartbeatTimer = setInterval(() => {
+        if (humeSocket.readyState === WebSocket.OPEN) {
+          humeSocket.ping();
+          if (clientSocket.readyState === WebSocket.OPEN) {
+            clientSocket.send(JSON.stringify({ type: "ping" }));
+          }
+        }
+      }, HEARTBEAT_INTERVAL_MS);
     });
 
     humeSocket.on("message", (data) => {
@@ -55,30 +67,48 @@ function proxyEmotionStream(clientSocket, HUME_KEY) {
       safeClose(clientSocket, 1011, "Hume streaming error");
     });
 
-    humeSocket.on("close", (c, r) => {
-      console.log(`⚠️ Hume closed: ${c} | ${r}`);
-      safeClose(clientSocket);
-    });
+    humeSocket.on("close", (code, reason) => {
+      console.log(`⚠️ Hume closed: ${code} | ${reason}`);
+      clearInterval(heartbeatTimer);
 
-    // -------------------------
-    // CLIENT → HUME
-    // -------------------------
-    clientSocket.on("message", (msg) => {
-      if (humeSocket.readyState === WebSocket.OPEN) {
-        humeSocket.send(msg);
+      if (clientSocket.readyState === WebSocket.OPEN) {
+        clientSocket.send(
+          JSON.stringify({ type: "error", message: "Hume stream disconnected, reconnecting..." })
+        );
       }
-    });
 
-    clientSocket.on("close", () => {
-      console.log("🛑 Client disconnected → closing Hume socket");
-      safeClose(humeSocket);
+      // Attempt to reconnect with exponential backoff
+      setTimeout(() => {
+        if (clientSocket.readyState === WebSocket.OPEN) {
+          connectHume();
+          reconnectDelay = Math.min(reconnectDelay * 2, 30000); // cap at 30 seconds
+        } else {
+          safeClose(clientSocket);
+        }
+      }, reconnectDelay);
     });
-
-  } catch (err) {
-    console.error("❌ Proxy initialization error:", err);
-    safeClose(clientSocket);
-    safeClose(humeSocket);
   }
+
+  // Proxy from client to Hume
+  clientSocket.on("message", (msg) => {
+    if (humeSocket.readyState === WebSocket.OPEN) {
+      humeSocket.send(msg);
+    }
+  });
+
+  clientSocket.on("close", () => {
+    console.log("🛑 Client disconnected → closing Hume socket");
+    clearInterval(heartbeatTimer);
+    safeClose(humeSocket);
+  });
+
+  clientSocket.on("error", (err) => {
+    console.error("❌ Client Socket Error:", err.message);
+    clearInterval(heartbeatTimer);
+    safeClose(humeSocket);
+  });
+
+  connectHume();
 }
 
 // --------------------------------------------
@@ -92,7 +122,7 @@ function safeClose(socket, code, reason) {
     } else {
       socket.terminate?.();
     }
-  } catch (e) {
+  } catch {
     socket.terminate?.();
   }
 }
