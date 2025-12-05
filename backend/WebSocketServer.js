@@ -10,19 +10,36 @@ class WebSocketServer {
       console.log("🔌 Client connected:", req.socket.remoteAddress);
       this.clients.add(ws);
 
-      ws.on("message", (raw) => {
-        let message;
-        try {
-          message = JSON.parse(raw.toString());
-        } catch (e) {
-          console.warn("⚠️ Invalid JSON received:", raw.toString());
-          return;
+      ws.on("message", async (raw) => {
+        // Handle binary frames (images) and JSON messages
+        if (raw instanceof Buffer) {
+          // Process binary image frame
+          const result = await this.processFrame(raw);
+          if (result) {
+            this.sendToClient(ws, {
+              type: "recommendations",
+              emotion: result.emotion,
+              recommendations: result.recommendations,
+            });
+          }
+        } else {
+          // JSON messages (like location or commands)
+          let message;
+          try {
+            message = JSON.parse(raw.toString());
+          } catch (e) {
+            console.warn("⚠️ Invalid JSON received:", raw.toString());
+            return;
+          }
+
+          console.log("📩 Received:", message);
+
+          // Example: handle location
+          if (message.type === "location") {
+            ws.userLocation = { lat: message.lat, lng: message.lng };
+            console.log("🌍 Client location set:", ws.userLocation);
+          }
         }
-
-        console.log("📩 Received:", message);
-
-        // Example: Echo back with type "response"
-        ws.send(JSON.stringify({ type: "response", data: message }));
       });
 
       ws.on("close", () => {
@@ -35,6 +52,28 @@ class WebSocketServer {
         this.clients.delete(ws);
       });
     });
+  }
+
+  /**
+   * Process a single video frame (binary) and generate emotion + recommendations
+   * Replace this with actual AI/emotion logic
+   * @param {Buffer} frame
+   */
+  async processFrame(frame) {
+    // Simulated placeholder for AI emotion detection
+    // You can integrate real models here
+    const emotions = ["happy", "sad", "angry", "neutral", "surprised"];
+    const randomEmotion = emotions[Math.floor(Math.random() * emotions.length)];
+
+    // Simulated recommendations
+    const recommendations = {
+      outfit: "Casual T-shirt",
+      food: "Pasta",
+      music: "Lo-fi Beats",
+      delivery: ["Nearby Pizza Place", "Local Sushi Bar"],
+    };
+
+    return { emotion: randomEmotion, recommendations };
   }
 
   /**
