@@ -1,16 +1,14 @@
 // frontend/src/EmotionDrivenDashboard.js
 import React, { useRef, useState, useEffect } from "react";
 
-// Dynamically select API and WS URLs based on environment
-const API_URL =
-  process.env.NODE_ENV === "production"
-    ? process.env.REACT_APP_API_URL_PROD
-    : process.env.REACT_APP_API_URL;
+// Dynamically select API and WS URLs
+const API_URL = process.env.NODE_ENV === "production"
+  ? process.env.REACT_APP_API_URL || "https://mindmaid-backend.onrender.com"
+  : process.env.REACT_APP_API_URL || "http://localhost:5000";
 
-const WS_URL =
-  process.env.NODE_ENV === "production"
-    ? process.env.REACT_APP_WS_URL_PROD
-    : process.env.REACT_APP_WS_URL;
+const WS_URL = process.env.NODE_ENV === "production"
+  ? process.env.REACT_APP_WS_URL || "wss://mindmaid-backend.onrender.com"
+  : process.env.REACT_APP_WS_URL || "ws://localhost:5000";
 
 export default function EmotionDrivenDashboard() {
   const videoRef = useRef(null);
@@ -22,7 +20,7 @@ export default function EmotionDrivenDashboard() {
 
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [fps, setFps] = useState(4);
+  const [fps, setFps] = useState(parseInt(process.env.REACT_APP_DEFAULT_FPS || 4));
 
   const [currentEmotion, setCurrentEmotion] = useState(null);
   const [emotionHistory, setEmotionHistory] = useState([]);
@@ -33,9 +31,7 @@ export default function EmotionDrivenDashboard() {
     delivery: [],
   });
 
-  // ------------------------------
-  // 1. Start camera
-  // ------------------------------
+  // Start camera
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -46,9 +42,7 @@ export default function EmotionDrivenDashboard() {
     }
   };
 
-  // ------------------------------
-  // 2. Capture frame & send to WebSocket
-  // ------------------------------
+  // Capture frame & send to WebSocket
   const captureFrame = () => {
     if (!videoRef.current || !canvasRef.current || wsRef.current?.readyState !== WebSocket.OPEN)
       return;
@@ -69,22 +63,16 @@ export default function EmotionDrivenDashboard() {
     }, "image/jpeg", 0.8);
   };
 
-  // ------------------------------
-  // 3. Adjust FPS dynamically
-  // ------------------------------
+  // Adjust FPS dynamically
   const adjustFPS = (emotionChanged) => {
     const newFps = emotionChanged ? 6 : 2;
     setFps(newFps);
 
-    if (frameIntervalRef.current) {
-      clearInterval(frameIntervalRef.current);
-      frameIntervalRef.current = setInterval(captureFrame, 1000 / newFps);
-    }
+    if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
+    frameIntervalRef.current = setInterval(captureFrame, 1000 / newFps);
   };
 
-  // ------------------------------
-  // 4. Start analysis (WebSocket)
-  // ------------------------------
+  // Start analysis
   const startAnalysis = async () => {
     await startCamera();
 
@@ -97,13 +85,7 @@ export default function EmotionDrivenDashboard() {
       setIsAnalyzing(true);
 
       if (userLocationRef.current) {
-        ws.send(
-          JSON.stringify({
-            type: "location",
-            lat: userLocationRef.current.lat,
-            lng: userLocationRef.current.lng,
-          })
-        );
+        ws.send(JSON.stringify({ type: "location", ...userLocationRef.current }));
       }
 
       frameIntervalRef.current = setInterval(captureFrame, 1000 / fps);
@@ -114,15 +96,12 @@ export default function EmotionDrivenDashboard() {
         const raw = event.data instanceof Blob ? await event.data.text() : event.data;
         const data = JSON.parse(raw);
 
-        if (data.type === "recommendations") {
-          const emotion = data.emotion;
+        if (data.success && data.dominantEmotion) {
+          const emotion = data.dominantEmotion;
           const emotionChanged = lastEmotionRef.current !== emotion;
           lastEmotionRef.current = emotion;
 
-          setCurrentEmotion({
-            emotion,
-            timestamp: new Date().toLocaleTimeString(),
-          });
+          setCurrentEmotion({ emotion, timestamp: new Date().toLocaleTimeString() });
 
           setEmotionHistory((prev) => [
             { emotion, timestamp: new Date().toLocaleTimeString() },
@@ -132,10 +111,10 @@ export default function EmotionDrivenDashboard() {
           adjustFPS(emotionChanged);
 
           setRecommendations({
-            outfit: data.recommendations.outfit,
-            food: data.recommendations.food,
-            music: data.recommendations.music,
-            delivery: data.recommendations.delivery || [],
+            outfit: data.recommendation.outfit || "",
+            food: data.recommendation.food || "",
+            music: data.recommendation.music || "",
+            delivery: data.recommendation.nearbyRestaurants || [],
           });
         }
       } catch (err) {
@@ -157,9 +136,7 @@ export default function EmotionDrivenDashboard() {
     };
   };
 
-  // ------------------------------
-  // 5. Stop analysis
-  // ------------------------------
+  // Stop analysis
   const stopAnalysis = () => {
     if (wsRef.current) wsRef.current.close();
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
@@ -167,33 +144,18 @@ export default function EmotionDrivenDashboard() {
     setConnectionStatus("disconnected");
   };
 
-  // ------------------------------
-  // 6. Get user location
-  // ------------------------------
+  // Get user location
   useEffect(() => {
     navigator.geolocation?.getCurrentPosition(
-      (pos) => {
-        userLocationRef.current = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        };
-      },
+      (pos) => (userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude }),
       (err) => console.warn("Location blocked:", err)
     );
   }, []);
 
-  // ------------------------------
-  // 7. Render UI
-  // ------------------------------
   return (
     <div style={{ padding: 20 }}>
       <h1>🧠 Emotion Driven Dashboard</h1>
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        style={{ width: 400, borderRadius: 8, marginTop: 20 }}
-      />
+      <video ref={videoRef} autoPlay playsInline style={{ width: 400, borderRadius: 8, marginTop: 20 }} />
       <canvas ref={canvasRef} style={{ display: "none" }} />
 
       <div style={{ marginTop: 20 }}>
@@ -228,11 +190,7 @@ export default function EmotionDrivenDashboard() {
         {recommendations.delivery.length > 0 && (
           <div>
             <strong>Delivery Options:</strong>
-            <ul>
-              {recommendations.delivery.map((item, i) => (
-                <li key={i}>{item}</li>
-              ))}
-            </ul>
+            <ul>{recommendations.delivery.map((item, i) => <li key={i}>{item.name}</li>)}</ul>
           </div>
         )}
       </div>
@@ -240,11 +198,7 @@ export default function EmotionDrivenDashboard() {
       {emotionHistory.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <h3>Emotion History (last 10)</h3>
-          <ul>
-            {emotionHistory.map((e, idx) => (
-              <li key={idx}>{e.emotion} - {e.timestamp}</li>
-            ))}
-          </ul>
+          <ul>{emotionHistory.map((e, idx) => <li key={idx}>{e.emotion} - {e.timestamp}</li>)}</ul>
         </div>
       )}
     </div>
