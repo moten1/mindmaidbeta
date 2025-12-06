@@ -1,14 +1,16 @@
 // frontend/src/EmotionDrivenDashboard.js
 import React, { useRef, useState, useEffect } from "react";
 
-// Dynamically select API and WS URLs
-const API_URL = process.env.NODE_ENV === "production"
-  ? process.env.REACT_APP_API_URL || "https://mindmaid-backend.onrender.com"
-  : process.env.REACT_APP_API_URL || "http://localhost:5000";
+// API & WS URLs
+const API_URL =
+  process.env.NODE_ENV === "production"
+    ? process.env.REACT_APP_API_URL_PROD || process.env.REACT_APP_API_URL
+    : process.env.REACT_APP_API_URL;
 
-const WS_URL = process.env.NODE_ENV === "production"
-  ? process.env.REACT_APP_WS_URL || "wss://mindmaid-backend.onrender.com"
-  : process.env.REACT_APP_WS_URL || "ws://localhost:5000";
+const WS_URL =
+  process.env.NODE_ENV === "production"
+    ? process.env.REACT_APP_WS_URL_PROD || process.env.REACT_APP_WS_URL
+    : process.env.REACT_APP_WS_URL;
 
 export default function EmotionDrivenDashboard() {
   const videoRef = useRef(null);
@@ -20,7 +22,7 @@ export default function EmotionDrivenDashboard() {
 
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [fps, setFps] = useState(parseInt(process.env.REACT_APP_DEFAULT_FPS || 4));
+  const [fps, setFps] = useState(Number(process.env.REACT_APP_DEFAULT_FPS) || 4);
 
   const [currentEmotion, setCurrentEmotion] = useState(null);
   const [emotionHistory, setEmotionHistory] = useState([]);
@@ -31,25 +33,24 @@ export default function EmotionDrivenDashboard() {
     delivery: [],
   });
 
-  // Start camera
+  // 1️⃣ Start camera
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       if (videoRef.current) videoRef.current.srcObject = stream;
+      console.log("📷 Camera started");
     } catch (err) {
-      console.error("Camera error:", err);
+      console.error("❌ Camera error:", err);
       alert("Camera access denied. Please allow camera access.");
     }
   };
 
-  // Capture frame & send to WebSocket
+  // 2️⃣ Capture frame & send to WebSocket
   const captureFrame = () => {
-    if (!videoRef.current || !canvasRef.current || wsRef.current?.readyState !== WebSocket.OPEN)
-      return;
+    if (!videoRef.current || !canvasRef.current || wsRef.current?.readyState !== WebSocket.OPEN) return;
 
     const canvas = canvasRef.current;
     const video = videoRef.current;
-
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
@@ -58,21 +59,23 @@ export default function EmotionDrivenDashboard() {
 
     canvas.toBlob((blob) => {
       if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
+        console.log("📤 Sending frame, size:", blob.size);
         wsRef.current.send(blob);
       }
     }, "image/jpeg", 0.8);
   };
 
-  // Adjust FPS dynamically
+  // 3️⃣ Adjust FPS dynamically
   const adjustFPS = (emotionChanged) => {
     const newFps = emotionChanged ? 6 : 2;
-    setFps(newFps);
+    if (newFps !== fps) setFps(newFps);
 
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
     frameIntervalRef.current = setInterval(captureFrame, 1000 / newFps);
+    console.log(`⏱ FPS adjusted to: ${newFps}`);
   };
 
-  // Start analysis
+  // 4️⃣ Start analysis
   const startAnalysis = async () => {
     await startCamera();
 
@@ -80,7 +83,7 @@ export default function EmotionDrivenDashboard() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log("✅ WebSocket connected");
+      console.log("✅ WebSocket connected to", WS_URL);
       setConnectionStatus("connected");
       setIsAnalyzing(true);
 
@@ -96,34 +99,38 @@ export default function EmotionDrivenDashboard() {
         const raw = event.data instanceof Blob ? await event.data.text() : event.data;
         const data = JSON.parse(raw);
 
-        if (data.success && data.dominantEmotion) {
-          const emotion = data.dominantEmotion;
-          const emotionChanged = lastEmotionRef.current !== emotion;
-          lastEmotionRef.current = emotion;
+        const rec = data.recommendation || data.recommendations;
+        const emotion = data.dominantEmotion || data.emotion;
 
-          setCurrentEmotion({ emotion, timestamp: new Date().toLocaleTimeString() });
+        if (!emotion) return;
 
-          setEmotionHistory((prev) => [
-            { emotion, timestamp: new Date().toLocaleTimeString() },
-            ...prev.slice(0, 9),
-          ]);
+        const emotionChanged = lastEmotionRef.current !== emotion;
+        lastEmotionRef.current = emotion;
 
-          adjustFPS(emotionChanged);
+        setCurrentEmotion({ emotion, timestamp: new Date().toLocaleTimeString() });
 
+        setEmotionHistory((prev) => [
+          { emotion, timestamp: new Date().toLocaleTimeString() },
+          ...prev.slice(0, 9),
+        ]);
+
+        adjustFPS(emotionChanged);
+
+        if (rec) {
           setRecommendations({
-            outfit: data.recommendation.outfit || "",
-            food: data.recommendation.food || "",
-            music: data.recommendation.music || "",
-            delivery: data.recommendation.nearbyRestaurants || [],
+            outfit: rec.outfit || "",
+            food: rec.food || "",
+            music: rec.music || "",
+            delivery: rec.nearbyRestaurants || rec.delivery || [],
           });
         }
       } catch (err) {
-        console.error("WS parse error:", err);
+        console.error("❌ WS parse error:", err);
       }
     };
 
     ws.onerror = (err) => {
-      console.error("WebSocket error:", err);
+      console.error("❌ WebSocket error:", err);
       setConnectionStatus("error");
       stopAnalysis();
     };
@@ -136,22 +143,27 @@ export default function EmotionDrivenDashboard() {
     };
   };
 
-  // Stop analysis
+  // 5️⃣ Stop analysis
   const stopAnalysis = () => {
     if (wsRef.current) wsRef.current.close();
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
     setIsAnalyzing(false);
     setConnectionStatus("disconnected");
+    console.log("🛑 Analysis stopped");
   };
 
-  // Get user location
+  // 6️⃣ Get user location
   useEffect(() => {
     navigator.geolocation?.getCurrentPosition(
-      (pos) => (userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      (err) => console.warn("Location blocked:", err)
+      (pos) => {
+        userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        console.log("📍 User location:", userLocationRef.current);
+      },
+      (err) => console.warn("❌ Location blocked:", err)
     );
   }, []);
 
+  // 7️⃣ Render UI
   return (
     <div style={{ padding: 20 }}>
       <h1>🧠 Emotion Driven Dashboard</h1>
@@ -190,7 +202,7 @@ export default function EmotionDrivenDashboard() {
         {recommendations.delivery.length > 0 && (
           <div>
             <strong>Delivery Options:</strong>
-            <ul>{recommendations.delivery.map((item, i) => <li key={i}>{item.name}</li>)}</ul>
+            <ul>{recommendations.delivery.map((item, i) => <li key={i}>{item}</li>)}</ul>
           </div>
         )}
       </div>
