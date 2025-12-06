@@ -35,12 +35,12 @@ const PORT = Number(process.env.PORT || 5000);
 const NODE_ENV = process.env.NODE_ENV || "production";
 
 // -----------------------------
-// CORS (very permissive & Render-safe)
+// CORS (Render Safe)
 // -----------------------------
 app.use(
   cors({
-    origin: true,
-    credentials: true,
+    origin: "*",
+    credentials: false,
   })
 );
 
@@ -103,38 +103,39 @@ const loadRoutes = async () => {
 await loadRoutes();
 
 // -----------------------------
-// Frontend Build Serve
-// -----------------------------
-const buildPath = path.resolve(__dirname, "../frontend/build");
-const indexPath = path.join(buildPath, "index.html");
-
-if (fs.existsSync(buildPath)) {
-  console.log("🎨 Serving frontend build...");
-
-  app.use(express.static(buildPath));
-
-  // Fallback only for non-API routes
-  app.get("*", (req, res) => {
-    if (req.url.startsWith("/api")) return res.status(404).json({ error: "Not found" });
-    return res.sendFile(indexPath);
-  });
-} else {
-  console.warn("⚠️ No frontend build found.");
-}
-
-// -----------------------------
-// Create HTTP Server
+// HTTP Server (must be created BEFORE WebSocket)
 // -----------------------------
 const server = http.createServer(app);
 
 // -----------------------------
-// IMPORTANT: Initialize WS Proxy BEFORE listen()
+// WS Proxy Init — MUST come BEFORE frontend serving
 // -----------------------------
 try {
   createEmotionStreamServer(server);
-  console.log("🔌 Hume Emotion WebSocket Proxy Ready");
+  console.log("🔌 Emotion WebSocket Proxy Ready");
 } catch (e) {
   console.error("❌ WS Proxy Error:", e);
+}
+
+// -----------------------------
+// Serve Frontend Build (if exists)
+// -----------------------------
+const buildPath = path.resolve(__dirname, "../frontend/build");
+const indexPath = path.join(buildPath, "index.html");
+
+// Added safety: prevent Render 404 loops
+if (fs.existsSync(buildPath)) {
+  console.log("🎨 Serving frontend build...");
+  app.use(express.static(buildPath));
+
+  app.get("*", (req, res) => {
+    if (req.url.startsWith("/api")) {
+      return res.status(404).json({ error: "Not found" });
+    }
+    return res.sendFile(indexPath);
+  });
+} else {
+  console.warn("⚠️ No frontend build found.");
 }
 
 // -----------------------------

@@ -1,47 +1,67 @@
 // backend/emotionProxy.js
-// ============================================
-// 🔥 MindMaid Emotion Stream + Real-time Recommendations
-// ============================================
+// ======================================================
+// 🔥 MindMaid Emotion Stream Proxy (Hume → Frontend)
+// Fully revised, stable, Render-ready
+// ======================================================
 
 import { WebSocketServer, WebSocket } from "ws";
 import axios from "axios";
+import url from "url";
 
-const HUME_WS_URL = "wss://api.hume.ai/v0/stream/models?models=face";
-const FORWARD_INTERVAL = 2000; // send frame every 2s
-const PING_INTERVAL = 25000;    // Hume keepalive
+const HUME_WS_URL =
+  "wss://api.hume.ai/v0/stream/models?models=face&granularity=all";
 
+const FORWARD_INTERVAL = 350; // MUCH faster → Hume requires continuous frames
+const PING_INTERVAL = 25000;
+
+/**
+ * Attach WebSocket upgrade handler to HTTP server
+ */
 export function createEmotionStreamServer(server) {
   const wss = new WebSocketServer({ noServer: true });
-  console.log("🧩 Emotion WebSocket proxy initialized at /api/emotion/stream");
+  console.log("🧩 WS proxy ready → /api/emotion/stream");
 
   server.on("upgrade", (request, socket, head) => {
-    if (!request.url.startsWith("/api/emotion/stream")) return;
+    const pathname = url.parse(request.url).pathname;
+
+    // STRICT MATCHING — avoids Render catching it
+    if (pathname !== "/api/emotion/stream") return;
 
     const HUME_KEY = process.env.HUME_API_KEY;
     if (!HUME_KEY) {
-      console.error("❌ HUME_API_KEY missing");
+      console.error("❌ Missing HUME_API_KEY");
       socket.destroy();
       return;
     }
 
-    wss.handleUpgrade(request, socket, head, (clientSocket) => {
-      handleClient(clientSocket, HUME_KEY);
-    });
+    wss.handleUpgrade(request, socket, head, (clientSocket) =>
+      handleClient(clientSocket, HUME_KEY)
+    );
   });
 }
 
+/**
+ * Google Places helper
+ */
 async function getNearbyRestaurants(lat, lng, query = "restaurant") {
   try {
-    const res = await axios.get("https://maps.googleapis.com/maps/api/place/nearbysearch/json", {
-      params: {
-        key: process.env.GOOGLE_MAPS_API_KEY,
-        location: `${lat},${lng}`,
-        radius: 5000,
-        type: "restaurant",
-        keyword: query,
-      },
-    });
-    return res.data.results.map(r => ({
+    const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+    if (!API_KEY) return [];
+
+    const res = await axios.get(
+      "https://maps.googleapis.com/maps/api/place/nearbysearch/json",
+      {
+        params: {
+          key: API_KEY,
+          location: `${lat},${lng}`,
+          radius: 5000,
+          keyword: query,
+          type: "restaurant",
+        },
+      }
+    );
+
+    return res.data.results.slice(0, 5).map((r) => ({
       name: r.name,
       address: r.vicinity,
       rating: r.rating,
@@ -52,41 +72,54 @@ async function getNearbyRestaurants(lat, lng, query = "restaurant") {
   }
 }
 
+/**
+ * Handle each connected frontend client
+ */
 function handleClient(clientSocket, HUME_KEY) {
   let humeSocket = null;
   let latestFrame = null;
   let forwardTimer = null;
   let pingTimer = null;
-  let closedByServer = false;
+  let userLocation = null;
 
-  // Track user location sent from frontend
-  let userLocation = null; // {lat: number, lng: number}
-
+  // -----------------------
+  // Connect to Hume WS
+  // -----------------------
   const createHumeSocket = () => {
     const ws = new WebSocket(HUME_WS_URL, {
-      headers: { Authorization: `Bearer ${HUME_KEY}` }
+      headers: { Authorization: `Bearer ${HUME_KEY}` },
     });
 
     ws.on("open", () => {
-      console.log("✅ Connected to Hume WebSocket");
-      if (pingTimer) clearInterval(pingTimer);
+      console.log("✅ Hume WebSocket Connected");
+
       pingTimer = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) ws.ping();
       }, PING_INTERVAL);
     });
 
     ws.on("message", async (data) => {
+      if (clientSocket.readyState !== WebSocket.OPEN) return;
+
       try {
-        if (clientSocket.readyState !== WebSocket.OPEN) return;
+        const payload = JSON.parse(data.toString());
 
-        let payload = JSON.parse(data.toString());
-        let emotion = payload.emotion?.dominant || payload?.data?.face?.emotion?.dominant || "unknown";
-        let emotions = payload.emotion?.all || payload?.data?.face?.emotion?.all || {};
+        const result =
+          payload?.face?.predictions?.[0]?.emotion ??
+          payload?.emotion ??
+          null;
 
-        // Fetch AI recommendations
-        let outfit = emotionToOutfit(emotion);
-        let music = emotionToMusic(emotion);
-        let food = emotionToFood(emotion);
+        const dominant =
+          result?.dominant ??
+          Object.entries(result?.scores ?? {})?.[0]?.[0] ??
+          "unknown";
+
+        const emotions = result?.scores || {};
+
+        // Recommendations
+        const outfit = emotionToOutfit(dominant);
+        const music = emotionToMusic(dominant);
+        const food = emotionToFood(dominant);
         let nearbyRestaurants = [];
 
         if (userLocation) {
@@ -97,83 +130,152 @@ function handleClient(clientSocket, HUME_KEY) {
           );
         }
 
-        clientSocket.send(JSON.stringify({
-          success: true,
-          dominantEmotion: emotion,
-          emotions,
-          recommendation: {
-            outfit,
-            music,
-            food,
-            nearbyRestaurants
-          }
-        }));
+        clientSocket.send(
+          JSON.stringify({
+            success: true,
+            dominantEmotion: dominant,
+            emotions,
+            recommendation: {
+              outfit,
+              music,
+              food,
+              nearbyRestaurants,
+            },
+          })
+        );
       } catch (err) {
-        console.error("❌ Error processing Hume message:", err);
+        console.error("❌ Hume message decode error:", err);
       }
     });
 
     ws.on("close", () => {
-      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-      if (!closedByServer) setTimeout(() => { humeSocket = createHumeSocket(); }, 5000);
+      console.log("⚠️ Hume socket closed → reconnecting");
+      reconnect();
     });
 
-    ws.on("error", (err) => console.error("❌ Hume socket error:", err));
+    ws.on("error", (err) => {
+      console.error("❌ Hume WS error:", err);
+    });
+
     return ws;
+  };
+
+  const reconnect = () => {
+    setTimeout(() => {
+      humeSocket = createHumeSocket();
+    }, 3000);
   };
 
   humeSocket = createHumeSocket();
 
+  // -----------------------
+  // Incoming messages from client
+  // -----------------------
   clientSocket.on("message", (msg, isBinary) => {
     try {
       if (isBinary) {
-        latestFrame = Buffer.from(msg);
-      } else {
-        const data = JSON.parse(msg.toString());
-        if (data.type === "location") {
-          userLocation = { lat: data.lat, lng: data.lng };
-        } else if (data.type === "control" && data.action === "stop") {
-          cleanup();
-        } else if (data.data) {
-          // Accept base64 frame from frontend
-          latestFrame = Buffer.from(data.data, "base64");
-        }
+        // UNCHANGED: direct binary from canvas → acceptable
+        latestFrame = msg;
+        return;
       }
-    } catch (err) { console.error("❌ Client message error:", err); }
+
+      const data = JSON.parse(msg.toString());
+
+      if (data.type === "location") {
+        userLocation = { lat: data.lat, lng: data.lng };
+      }
+
+      if (data.type === "stop") {
+        cleanup();
+      }
+
+      // Accept base64 frames
+      if (data.frame) {
+        latestFrame = Buffer.from(data.frame, "base64");
+      }
+    } catch {
+      console.error("Client message parse failed");
+    }
   });
+
+  // -----------------------
+  // Frame forward loop (FAST)
+  // -----------------------
+  forwardTimer = setInterval(() => {
+    if (!latestFrame) return;
+    if (!humeSocket || humeSocket.readyState !== WebSocket.OPEN) return;
+
+    try {
+      // Hume expects JSON wrapper for base64 images
+      humeSocket.send(
+        JSON.stringify({
+          models: ["face"],
+          data: latestFrame.toString("base64"),
+        })
+      );
+      latestFrame = null;
+    } catch (err) {
+      console.error("❌ Error sending frame to Hume:", err);
+    }
+  }, FORWARD_INTERVAL);
 
   clientSocket.on("close", cleanup);
   clientSocket.on("error", cleanup);
 
-  forwardTimer = setInterval(() => {
-    if (!latestFrame || !humeSocket || humeSocket.readyState !== WebSocket.OPEN) return;
-    humeSocket.send(latestFrame, { binary: true });
-    latestFrame = null;
-  }, FORWARD_INTERVAL);
-
+  // -----------------------
+  // CLEANUP
+  // -----------------------
   function cleanup() {
-    closedByServer = true;
     if (forwardTimer) clearInterval(forwardTimer);
     if (pingTimer) clearInterval(pingTimer);
-    try { if (humeSocket) humeSocket.close(); } catch(e){}
-    try { if (clientSocket) clientSocket.close(); } catch(e){}
+
+    try {
+      clientSocket.close();
+    } catch {}
+
+    try {
+      humeSocket.close();
+    } catch {}
+
+    console.log("💤 Client disconnected + cleaned");
   }
 }
 
-// =======================
-// Helper recommendation functions
-// =======================
-function emotionToOutfit(emotion) {
-  const map = { happy: "Bright casual outfit", sad: "Cozy sweater", neutral: "Smart casual", angry: "Dark tones", stress: "Comfort wear" };
-  return map[emotion] || "Comfort wear";
+// -------------------------------------------------------
+// Recommendation Helpers
+// -------------------------------------------------------
+function emotionToOutfit(e) {
+  const map = {
+    happy: "Bright casual outfit",
+    sad: "Cozy sweater",
+    neutral: "Smart casual",
+    angry: "Dark tones",
+    fear: "Soft sweaters",
+    stress: "Comfort wear",
+  };
+  return map[e] || "Comfort wear";
 }
 
-function emotionToMusic(emotion) {
-  const map = { happy: "Upbeat pop", sad: "Soft jazz", neutral: "Ambient", angry: "Rock", stress: "Lo-fi chill" };
-  return map[emotion] || "Ambient";
+function emotionToMusic(e) {
+  const map = {
+    happy: "Upbeat pop",
+    sad: "Soft jazz",
+    angry: "Rock",
+    neutral: "Ambient",
+    fear: "Piano",
+    stress: "Lo-fi chill",
+  };
+  return map[e] || "Ambient";
 }
 
-function emotionToFood(emotion) {
-  const map = { happy: "Fruit salad", sad: "Chocolate", neutral: "Sandwich", angry: "Spicy curry", stress: "Smoothie" };
-  return map[emotion] || "Snack";
+function emotionToFood(e) {
+  const map = {
+    happy: "Fruit salad",
+    sad: "Chocolate",
+    angry: "Spicy curry",
+    neutral: "Sandwich",
+    fear: "Warm soup",
+    stress: "Smoothie",
+  };
+  return map[e] || "Snack";
 }
