@@ -1,21 +1,27 @@
 // frontend/src/EmotionDrivenDashboard.js
 import React, { useRef, useState, useEffect } from "react";
 
-// API & WS URLs
+/* ---------------------------------------------
+   1️⃣ AUTO-DETECT API + WS URL (Production-safe)
+----------------------------------------------*/
 const API_URL =
   process.env.NODE_ENV === "production"
-    ? process.env.REACT_APP_API_URL_PROD || process.env.REACT_APP_API_URL
+    ? process.env.REACT_APP_API_URL_PROD
     : process.env.REACT_APP_API_URL;
 
-// Construct WebSocket URL dynamically using WS_URL + WS_PATH
 const WS_BASE =
   process.env.NODE_ENV === "production"
-    ? process.env.REACT_APP_WS_URL_PROD || process.env.REACT_APP_WS_URL
+    ? process.env.REACT_APP_WS_URL_PROD
     : process.env.REACT_APP_WS_URL;
 
-const WS_PATH = process.env.REACT_APP_WS_PATH || "/api/emotion/stream";
-const WS_URL = `${WS_BASE}${WS_PATH}`;
+// FORCE WS to wss:// in production
+const WS_URL =
+  (WS_BASE || "").replace("http://", "ws://").replace("https://", "wss://") +
+  (process.env.REACT_APP_WS_PATH || "/api/emotion/stream");
 
+/* ---------------------------------------------
+   MAIN COMPONENT
+----------------------------------------------*/
 export default function EmotionDrivenDashboard() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -26,7 +32,7 @@ export default function EmotionDrivenDashboard() {
 
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [fps, setFps] = useState(Number(process.env.REACT_APP_DEFAULT_FPS) || 4);
+  const [fps, setFps] = useState(4);
 
   const [currentEmotion, setCurrentEmotion] = useState(null);
   const [emotionHistory, setEmotionHistory] = useState([]);
@@ -37,7 +43,9 @@ export default function EmotionDrivenDashboard() {
     delivery: [],
   });
 
-  // 1️⃣ Start camera
+  /* ---------------------------------------------
+     2️⃣ CAMERA START
+  ----------------------------------------------*/
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -45,49 +53,73 @@ export default function EmotionDrivenDashboard() {
       console.log("📷 Camera started");
     } catch (err) {
       console.error("❌ Camera error:", err);
-      alert("Camera access denied. Please allow camera access.");
+      alert("Camera access blocked. Please enable it.");
     }
   };
 
-  // 2️⃣ Capture frame & send to WebSocket
+  /* ---------------------------------------------
+     3️⃣ SEND FRAME → WS
+  ----------------------------------------------*/
   const captureFrame = () => {
-    if (!videoRef.current || !canvasRef.current || wsRef.current?.readyState !== WebSocket.OPEN) return;
+    try {
+      if (
+        !videoRef.current ||
+        !canvasRef.current ||
+        wsRef.current?.readyState !== WebSocket.OPEN
+      )
+        return;
 
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+      const canvas = canvasRef.current;
+      const video = videoRef.current;
 
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
 
-    canvas.toBlob((blob) => {
-      if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
-        console.log("📤 Sending frame, size:", blob.size);
-        wsRef.current.send(blob);
-      }
-    }, "image/jpeg", 0.8);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      canvas.toBlob(
+        (blob) => {
+          if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(blob);
+          }
+        },
+        "image/jpeg",
+        0.8
+      );
+    } catch (e) {
+      console.warn("Frame capture skipped:", e);
+    }
   };
 
-  // 3️⃣ Adjust FPS dynamically
+  /* ---------------------------------------------
+     4️⃣ DYNAMIC FPS (Smart Load Balancer)
+  ----------------------------------------------*/
   const adjustFPS = (emotionChanged) => {
-    const newFps = emotionChanged ? 6 : 2;
-    if (newFps !== fps) setFps(newFps);
+    const optimal = emotionChanged ? 6 : 2;
+    if (optimal === fps) return;
 
+    setFps(optimal);
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
-    frameIntervalRef.current = setInterval(captureFrame, 1000 / newFps);
-    console.log(`⏱ FPS adjusted to: ${newFps}`);
+    frameIntervalRef.current = setInterval(captureFrame, 1000 / optimal);
+
+    console.log(`⏱ FPS changed → ${optimal}`);
   };
 
-  // 4️⃣ Start analysis
+  /* ---------------------------------------------
+     5️⃣ START ANALYSIS
+  ----------------------------------------------*/
   const startAnalysis = async () => {
     await startCamera();
+
+    console.log("🌐 Attempting WS:", WS_URL);
+    setConnectionStatus("connecting");
 
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log("✅ WebSocket connected to", WS_URL);
+      console.log("✅ WS CONNECTED:", WS_URL);
       setConnectionStatus("connected");
       setIsAnalyzing(true);
 
@@ -101,24 +133,25 @@ export default function EmotionDrivenDashboard() {
     ws.onmessage = async (event) => {
       try {
         const raw = event.data instanceof Blob ? await event.data.text() : event.data;
-        const data = JSON.parse(raw);
+        const json = JSON.parse(raw);
 
-        const rec = data.recommendation || data.recommendations;
-        const emotion = data.dominantEmotion || data.emotion;
+        const emotion = json.dominantEmotion || json.emotion;
+        const rec = json.recommendation || json.recommendations;
 
         if (!emotion) return;
 
-        const emotionChanged = lastEmotionRef.current !== emotion;
+        const changed = lastEmotionRef.current !== emotion;
         lastEmotionRef.current = emotion;
 
-        setCurrentEmotion({ emotion, timestamp: new Date().toLocaleTimeString() });
+        const timestamp = new Date().toLocaleTimeString();
+        setCurrentEmotion({ emotion, timestamp });
 
         setEmotionHistory((prev) => [
-          { emotion, timestamp: new Date().toLocaleTimeString() },
+          { emotion, timestamp },
           ...prev.slice(0, 9),
         ]);
 
-        adjustFPS(emotionChanged);
+        adjustFPS(changed);
 
         if (rec) {
           setRecommendations({
@@ -129,54 +162,69 @@ export default function EmotionDrivenDashboard() {
           });
         }
       } catch (err) {
-        console.error("❌ WS parse error:", err);
+        console.error("❌ WS JSON Parse Error:", err);
       }
     };
 
     ws.onerror = (err) => {
-      console.error("❌ WebSocket error:", err);
+      console.error("❌ WS ERROR:", err);
       setConnectionStatus("error");
-      stopAnalysis();
     };
 
     ws.onclose = () => {
-      console.log("❌ WebSocket closed");
+      console.log("🔌 WS CLOSED");
       setConnectionStatus("disconnected");
-      setIsAnalyzing(false);
-      if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
+      stopAnalysis(false);
     };
   };
 
-  // 5️⃣ Stop analysis
-  const stopAnalysis = () => {
+  /* ---------------------------------------------
+     6️⃣ STOP ANALYSIS
+  ----------------------------------------------*/
+  const stopAnalysis = (manual = true) => {
     if (wsRef.current) wsRef.current.close();
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
+
     setIsAnalyzing(false);
-    setConnectionStatus("disconnected");
+    if (manual) setConnectionStatus("disconnected");
+
     console.log("🛑 Analysis stopped");
   };
 
-  // 6️⃣ Get user location
+  /* ---------------------------------------------
+     7️⃣ GET USER LOCATION
+  ----------------------------------------------*/
   useEffect(() => {
     navigator.geolocation?.getCurrentPosition(
       (pos) => {
-        userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        console.log("📍 User location:", userLocationRef.current);
+        userLocationRef.current = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        };
+        console.log("📍 Location:", userLocationRef.current);
       },
-      (err) => console.warn("❌ Location blocked:", err)
+      () => console.warn("Location blocked")
     );
   }, []);
 
-  // 7️⃣ Render UI
+  /* ---------------------------------------------
+     8️⃣ UI
+  ----------------------------------------------*/
   return (
     <div style={{ padding: 20 }}>
       <h1>🧠 Emotion Driven Dashboard</h1>
-      <video ref={videoRef} autoPlay playsInline style={{ width: 400, borderRadius: 8, marginTop: 20 }} />
+
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        style={{ width: 400, borderRadius: 8, marginTop: 20 }}
+      />
       <canvas ref={canvasRef} style={{ display: "none" }} />
 
       <div style={{ marginTop: 20 }}>
         <button
-          onClick={isAnalyzing ? stopAnalysis : startAnalysis}
+          onClick={isAnalyzing ? () => stopAnalysis(true) : startAnalysis}
           style={{
             padding: "10px 20px",
             fontSize: 16,
@@ -205,8 +253,8 @@ export default function EmotionDrivenDashboard() {
         <p><strong>Music:</strong> {recommendations.music}</p>
         {recommendations.delivery.length > 0 && (
           <div>
-            <strong>Delivery Options:</strong>
-            <ul>{recommendations.delivery.map((item, i) => <li key={i}>{item}</li>)}</ul>
+            <strong>Delivery:</strong>
+            <ul>{recommendations.delivery.map((x, i) => <li key={i}>{x}</li>)}</ul>
           </div>
         )}
       </div>
@@ -214,7 +262,11 @@ export default function EmotionDrivenDashboard() {
       {emotionHistory.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <h3>Emotion History (last 10)</h3>
-          <ul>{emotionHistory.map((e, idx) => <li key={idx}>{e.emotion} - {e.timestamp}</li>)}</ul>
+          <ul>
+            {emotionHistory.map((e, i) => (
+              <li key={i}>{e.emotion} – {e.timestamp}</li>
+            ))}
+          </ul>
         </div>
       )}
     </div>
