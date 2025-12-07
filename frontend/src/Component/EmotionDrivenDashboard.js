@@ -19,6 +19,9 @@ const WS_URL =
   (WS_BASE || "").replace("http://", "ws://").replace("https://", "wss://") +
   (process.env.REACT_APP_WS_PATH || "/api/emotion/stream");
 
+const DEFAULT_FPS = Number(process.env.REACT_APP_DEFAULT_FPS) || 4;
+const RECONNECT_INTERVAL = 3000; // 3 seconds
+
 /* ---------------------------------------------
    MAIN COMPONENT
 ----------------------------------------------*/
@@ -29,10 +32,11 @@ export default function EmotionDrivenDashboard() {
   const frameIntervalRef = useRef(null);
   const lastEmotionRef = useRef(null);
   const userLocationRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
 
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [fps, setFps] = useState(4);
+  const [fps, setFps] = useState(DEFAULT_FPS);
 
   const [currentEmotion, setCurrentEmotion] = useState(null);
   const [emotionHistory, setEmotionHistory] = useState([]);
@@ -58,15 +62,11 @@ export default function EmotionDrivenDashboard() {
   };
 
   /* ---------------------------------------------
-     3️⃣ SEND FRAME → WS
+     3️⃣ SEND FRAME → WS (Base64)
   ----------------------------------------------*/
   const captureFrame = () => {
     try {
-      if (
-        !videoRef.current ||
-        !canvasRef.current ||
-        wsRef.current?.readyState !== WebSocket.OPEN
-      )
+      if (!videoRef.current || !canvasRef.current || wsRef.current?.readyState !== WebSocket.OPEN)
         return;
 
       const canvas = canvasRef.current;
@@ -78,15 +78,15 @@ export default function EmotionDrivenDashboard() {
       const ctx = canvas.getContext("2d");
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      canvas.toBlob(
-        (blob) => {
-          if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(blob);
-          }
-        },
-        "image/jpeg",
-        0.8
-      );
+      canvas.toBlob((blob) => {
+        if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            wsRef.current.send(JSON.stringify({ data: reader.result }));
+          };
+          reader.readAsDataURL(blob);
+        }
+      }, "image/jpeg", 0.8);
     } catch (e) {
       console.warn("Frame capture skipped:", e);
     }
@@ -107,10 +107,15 @@ export default function EmotionDrivenDashboard() {
   };
 
   /* ---------------------------------------------
-     5️⃣ START ANALYSIS
+     5️⃣ START ANALYSIS + WS CONNECT
   ----------------------------------------------*/
   const startAnalysis = async () => {
     await startCamera();
+    connectWebSocket();
+  };
+
+  const connectWebSocket = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
     console.log("🌐 Attempting WS:", WS_URL);
     setConnectionStatus("connecting");
@@ -137,7 +142,6 @@ export default function EmotionDrivenDashboard() {
 
         const emotion = json.dominantEmotion || json.emotion;
         const rec = json.recommendation || json.recommendations;
-
         if (!emotion) return;
 
         const changed = lastEmotionRef.current !== emotion;
@@ -172,9 +176,14 @@ export default function EmotionDrivenDashboard() {
     };
 
     ws.onclose = () => {
-      console.log("🔌 WS CLOSED");
+      console.warn("🔌 WS CLOSED — retrying in 3s...");
       setConnectionStatus("disconnected");
       stopAnalysis(false);
+
+      // Auto-reconnect
+      reconnectTimerRef.current = setTimeout(() => {
+        if (isAnalyzing) connectWebSocket();
+      }, RECONNECT_INTERVAL);
     };
   };
 
@@ -182,6 +191,7 @@ export default function EmotionDrivenDashboard() {
      6️⃣ STOP ANALYSIS
   ----------------------------------------------*/
   const stopAnalysis = (manual = true) => {
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     if (wsRef.current) wsRef.current.close();
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
 
