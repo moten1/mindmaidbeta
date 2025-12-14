@@ -11,19 +11,22 @@ class WebSocketServer {
       this.clients.add(ws);
 
       ws.on("message", async (raw) => {
-        // Handle binary frames (images) and JSON messages
-        if (raw instanceof Buffer) {
-          // Process binary image frame
-          const result = await this.processFrame(raw);
-          if (result) {
-            this.sendToClient(ws, {
-              type: "recommendations",
-              emotion: result.emotion,
-              recommendations: result.recommendations,
-            });
+        try {
+          // Handle binary frames (images)
+          if (Buffer.isBuffer(raw) || raw instanceof ArrayBuffer) {
+            const buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+            const result = await this.processFrame(buffer);
+            if (result) {
+              this.sendToClient(ws, {
+                type: "recommendations",
+                emotion: result.emotion,
+                recommendations: result.recommendations,
+              });
+            }
+            return;
           }
-        } else {
-          // JSON messages (like location or commands)
+
+          // Handle JSON messages
           let message;
           try {
             message = JSON.parse(raw.toString());
@@ -36,9 +39,15 @@ class WebSocketServer {
 
           // Example: handle location
           if (message.type === "location") {
-            ws.userLocation = { lat: message.lat, lng: message.lng };
-            console.log("🌍 Client location set:", ws.userLocation);
+            const lat = parseFloat(message.lat);
+            const lng = parseFloat(message.lng);
+            if (!isNaN(lat) && !isNaN(lng)) {
+              ws.userLocation = { lat, lng };
+              console.log("🌍 Client location set:", ws.userLocation);
+            }
           }
+        } catch (err) {
+          console.error("⚠️ Error processing message:", err);
         }
       });
 
@@ -48,7 +57,7 @@ class WebSocketServer {
       });
 
       ws.on("error", (err) => {
-        console.error("⚠️ WebSocket error:", err.message);
+        console.error("⚠️ WebSocket error:", err);
         this.clients.delete(ws);
       });
     });
@@ -61,7 +70,6 @@ class WebSocketServer {
    */
   async processFrame(frame) {
     // Simulated placeholder for AI emotion detection
-    // You can integrate real models here
     const emotions = ["happy", "sad", "angry", "neutral", "surprised"];
     const randomEmotion = emotions[Math.floor(Math.random() * emotions.length)];
 
