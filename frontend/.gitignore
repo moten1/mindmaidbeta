@@ -1,5 +1,3 @@
 node_modules
 build
 .env
-.env.production
-frontend.env
