@@ -1,6 +1,7 @@
 // backend/server.js
 // ============================================
 // 🌟 MindMaid Backend Server (Stable Production Build)
+// Phase 0.2 — Health + WS Observability (SAFE)
 // ============================================
 
 import express from "express";
@@ -59,14 +60,19 @@ app.use((req, res, next) => {
 });
 
 // -----------------------------
-// Health Route
+// Health Route (Extended)
 // -----------------------------
 app.get("/api/health", (req, res) => {
+  const mem = process.memoryUsage();
   res.json({
     ok: true,
     uptime: Math.floor(process.uptime()),
     env: NODE_ENV,
     port: PORT,
+    memory: {
+      rss: Math.round(mem.rss / 1024 / 1024) + " MB",
+      heapUsed: Math.round(mem.heapUsed / 1024 / 1024) + " MB",
+    },
     timestamp: new Date().toISOString(),
   });
 });
@@ -103,19 +109,44 @@ const loadRoutes = async () => {
 await loadRoutes();
 
 // -----------------------------
-// HTTP Server (must be created BEFORE WebSocket)
+// HTTP Server (BEFORE WS)
 // -----------------------------
 const server = http.createServer(app);
 
 // -----------------------------
-// WS Proxy Init — MUST come BEFORE frontend serving
+// WS Proxy Init
 // -----------------------------
+let wsServerRef = null;
+
 try {
-  createEmotionStreamServer(server);
+  wsServerRef = createEmotionStreamServer(server);
   console.log("🔌 Emotion WebSocket Proxy Ready");
 } catch (e) {
   console.error("❌ WS Proxy Error:", e);
 }
+
+// -----------------------------
+// WS HEARTBEAT (Phase 0.2)
+// -----------------------------
+setInterval(() => {
+  try {
+    const clients =
+      wsServerRef?.wss?.clients?.size ?? "unknown";
+
+    console.log(
+      JSON.stringify({
+        level: "info",
+        event: "ws_heartbeat",
+        clients,
+        uptime: Math.floor(process.uptime()),
+        memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
+        ts: new Date().toISOString(),
+      })
+    );
+  } catch (e) {
+    console.warn("⚠️ WS heartbeat error:", e.message);
+  }
+}, 30000);
 
 // -----------------------------
 // Serve Frontend Build (if exists)
@@ -123,7 +154,6 @@ try {
 const buildPath = path.resolve(__dirname, "../frontend/build");
 const indexPath = path.join(buildPath, "index.html");
 
-// Added safety: prevent Render 404 loops
 if (fs.existsSync(buildPath)) {
   console.log("🎨 Serving frontend build...");
   app.use(express.static(buildPath));

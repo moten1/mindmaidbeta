@@ -1,45 +1,48 @@
-// frontend/src/EmotionDrivenDashboard.js
 import React, { useRef, useState, useEffect } from "react";
 
-/* ---------------------------------------------
-   1️⃣ AUTO-DETECT API + WS URL (Production-safe)
-----------------------------------------------*/
-const API_URL =
-  process.env.NODE_ENV === "production"
-    ? process.env.REACT_APP_API_URL_PROD
-    : process.env.REACT_APP_API_URL;
+/* ======================================================
+   STRICT ENV CONFIG (NO FRONTEND FALLBACK LOGIC)
+====================================================== */
+const RAW_WS_HOST =
+  process.env.REACT_APP_WS_URL_PROD ||
+  process.env.REACT_APP_WS_URL;
 
-const WS_BASE =
-  process.env.NODE_ENV === "production"
-    ? process.env.REACT_APP_WS_URL_PROD
-    : process.env.REACT_APP_WS_URL;
+const WS_PATH =
+  process.env.REACT_APP_WS_PATH || "/api/emotion/stream";
 
-// FORCE WS to wss:// in production
-const WS_URL =
-  (WS_BASE || "").replace("http://", "ws://").replace("https://", "wss://") +
-  (process.env.REACT_APP_WS_PATH || "/api/emotion/stream");
+if (!RAW_WS_HOST) {
+  console.error("❌ REACT_APP_WS_URL(_PROD) is NOT defined");
+}
+
+// ✅ FORCE WS PROTOCOL
+const WS_HOST = RAW_WS_HOST
+  .replace(/^http:\/\//, "ws://")
+  .replace(/^https:\/\//, "wss://")
+  .replace(/\/$/, "");
+
+const WS_URL = `${WS_HOST}${WS_PATH}`;
 
 const DEFAULT_FPS = Number(process.env.REACT_APP_DEFAULT_FPS) || 4;
-const RECONNECT_INTERVAL = 3000; // 3 seconds
+const RECONNECT_DELAY = 3000;
 
-/* ---------------------------------------------
-   MAIN COMPONENT
-----------------------------------------------*/
+/* ======================================================
+   COMPONENT
+====================================================== */
 export default function EmotionDrivenDashboard() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const wsRef = useRef(null);
-  const frameIntervalRef = useRef(null);
-  const lastEmotionRef = useRef(null);
-  const userLocationRef = useRef(null);
+  const frameTimerRef = useRef(null);
   const reconnectTimerRef = useRef(null);
+  const lastEmotionRef = useRef(null);
+  const runningRef = useRef(false);
 
-  const [connectionStatus, setConnectionStatus] = useState("disconnected");
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [status, setStatus] = useState("disconnected");
+  const [running, setRunning] = useState(false);
+  const [emotion, setEmotion] = useState(null);
+  const [history, setHistory] = useState([]);
   const [fps, setFps] = useState(DEFAULT_FPS);
 
-  const [currentEmotion, setCurrentEmotion] = useState(null);
-  const [emotionHistory, setEmotionHistory] = useState([]);
   const [recommendations, setRecommendations] = useState({
     outfit: "",
     food: "",
@@ -47,238 +50,152 @@ export default function EmotionDrivenDashboard() {
     delivery: [],
   });
 
-  /* ---------------------------------------------
-     2️⃣ CAMERA START
-  ----------------------------------------------*/
+  /* ======================================================
+     CAMERA
+  ====================================================== */
   const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      if (videoRef.current) videoRef.current.srcObject = stream;
-      console.log("📷 Camera started");
-    } catch (err) {
-      console.error("❌ Camera error:", err);
-      alert("Camera access blocked. Please enable it.");
-    }
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    videoRef.current.srcObject = stream;
   };
 
-  /* ---------------------------------------------
-     3️⃣ SEND FRAME → WS (Base64)
-  ----------------------------------------------*/
-  const captureFrame = () => {
-    try {
-      if (!videoRef.current || !canvasRef.current || wsRef.current?.readyState !== WebSocket.OPEN)
-        return;
-
-      const canvas = canvasRef.current;
-      const video = videoRef.current;
-
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      canvas.toBlob((blob) => {
-        if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            wsRef.current.send(JSON.stringify({ data: reader.result }));
-          };
-          reader.readAsDataURL(blob);
-        }
-      }, "image/jpeg", 0.8);
-    } catch (e) {
-      console.warn("Frame capture skipped:", e);
-    }
+  const stopCamera = () => {
+    const stream = videoRef.current?.srcObject;
+    stream?.getTracks()?.forEach((t) => t.stop());
+    videoRef.current.srcObject = null;
   };
 
-  /* ---------------------------------------------
-     4️⃣ DYNAMIC FPS (Smart Load Balancer)
-  ----------------------------------------------*/
+  /* ======================================================
+     FRAME CAPTURE
+  ====================================================== */
+  const sendFrame = () => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || !video.videoWidth) return;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    canvas.getContext("2d").drawImage(video, 0, 0);
+
+    canvas.toBlob(
+      (blob) => blob && wsRef.current?.send(blob),
+      "image/jpeg",
+      0.8
+    );
+  };
+
+  const resetFrameInterval = (nextFps) => {
+    clearInterval(frameTimerRef.current);
+    frameTimerRef.current = setInterval(
+      sendFrame,
+      1000 / nextFps
+    );
+    setFps(nextFps);
+  };
+
+  /* ======================================================
+     FPS ADAPTATION
+  ====================================================== */
   const adjustFPS = (emotionChanged) => {
-    const optimal = emotionChanged ? 6 : 2;
-    if (optimal === fps) return;
-
-    setFps(optimal);
-    if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
-    frameIntervalRef.current = setInterval(captureFrame, 1000 / optimal);
-
-    console.log(`⏱ FPS changed → ${optimal}`);
+    const next = emotionChanged ? 6 : 2;
+    if (next !== fps) resetFrameInterval(next);
   };
 
-  /* ---------------------------------------------
-     5️⃣ START ANALYSIS + WS CONNECT
-  ----------------------------------------------*/
-  const startAnalysis = async () => {
-    await startCamera();
-    connectWebSocket();
-  };
+  /* ======================================================
+     WEBSOCKET
+  ====================================================== */
+  const connectWS = () => {
+    if (!runningRef.current) return;
 
-  const connectWebSocket = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
-
-    console.log("🌐 Attempting WS:", WS_URL);
-    setConnectionStatus("connecting");
-
+    setStatus("connecting");
     const ws = new WebSocket(WS_URL);
+    ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log("✅ WS CONNECTED:", WS_URL);
-      setConnectionStatus("connected");
-      setIsAnalyzing(true);
-
-      if (userLocationRef.current) {
-        ws.send(JSON.stringify({ type: "location", ...userLocationRef.current }));
-      }
-
-      frameIntervalRef.current = setInterval(captureFrame, 1000 / fps);
+      setStatus("connected");
+      resetFrameInterval(fps);
     };
 
-    ws.onmessage = async (event) => {
+    ws.onmessage = (event) => {
+      if (typeof event.data !== "string") return;
+
+      let data;
       try {
-        const raw = event.data instanceof Blob ? await event.data.text() : event.data;
-        const json = JSON.parse(raw);
-
-        const emotion = json.dominantEmotion || json.emotion;
-        const rec = json.recommendation || json.recommendations;
-        if (!emotion) return;
-
-        const changed = lastEmotionRef.current !== emotion;
-        lastEmotionRef.current = emotion;
-
-        const timestamp = new Date().toLocaleTimeString();
-        setCurrentEmotion({ emotion, timestamp });
-
-        setEmotionHistory((prev) => [
-          { emotion, timestamp },
-          ...prev.slice(0, 9),
-        ]);
-
-        adjustFPS(changed);
-
-        if (rec) {
-          setRecommendations({
-            outfit: rec.outfit || "",
-            food: rec.food || "",
-            music: rec.music || "",
-            delivery: rec.nearbyRestaurants || rec.delivery || [],
-          });
-        }
-      } catch (err) {
-        console.error("❌ WS JSON Parse Error:", err);
+        data = JSON.parse(event.data);
+      } catch {
+        return;
       }
+
+      if (!data.emotion) return;
+
+      const changed = lastEmotionRef.current !== data.emotion;
+      lastEmotionRef.current = data.emotion;
+
+      setEmotion(data.emotion);
+      setHistory((h) => [data.emotion, ...h.slice(0, 9)]);
+      if (data.recommendations) setRecommendations(data.recommendations);
+
+      adjustFPS(changed);
     };
 
-    ws.onerror = (err) => {
-      console.error("❌ WS ERROR:", err);
-      setConnectionStatus("error");
-    };
+    ws.onerror = () => setStatus("error");
 
     ws.onclose = () => {
-      console.warn("🔌 WS CLOSED — retrying in 3s...");
-      setConnectionStatus("disconnected");
-      stopAnalysis(false);
+      clearInterval(frameTimerRef.current);
+      setStatus("disconnected");
 
-      // Auto-reconnect
-      reconnectTimerRef.current = setTimeout(() => {
-        if (isAnalyzing) connectWebSocket();
-      }, RECONNECT_INTERVAL);
+      if (runningRef.current) {
+        reconnectTimerRef.current = setTimeout(
+          connectWS,
+          RECONNECT_DELAY
+        );
+      }
     };
   };
 
-  /* ---------------------------------------------
-     6️⃣ STOP ANALYSIS
-  ----------------------------------------------*/
-  const stopAnalysis = (manual = true) => {
-    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-    if (wsRef.current) wsRef.current.close();
-    if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
-
-    setIsAnalyzing(false);
-    if (manual) setConnectionStatus("disconnected");
-
-    console.log("🛑 Analysis stopped");
+  /* ======================================================
+     START / STOP
+  ====================================================== */
+  const start = async () => {
+    runningRef.current = true;
+    setRunning(true);
+    await startCamera();
+    connectWS();
   };
 
-  /* ---------------------------------------------
-     7️⃣ GET USER LOCATION
-  ----------------------------------------------*/
-  useEffect(() => {
-    navigator.geolocation?.getCurrentPosition(
-      (pos) => {
-        userLocationRef.current = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        };
-        console.log("📍 Location:", userLocationRef.current);
-      },
-      () => console.warn("Location blocked")
-    );
-  }, []);
+  const stop = () => {
+    runningRef.current = false;
+    clearInterval(frameTimerRef.current);
+    clearTimeout(reconnectTimerRef.current);
+    wsRef.current?.close();
+    stopCamera();
+    setRunning(false);
+    setStatus("disconnected");
+  };
 
-  /* ---------------------------------------------
-     8️⃣ UI
-  ----------------------------------------------*/
+  useEffect(() => () => stop(), []);
+
+  /* ======================================================
+     UI
+  ====================================================== */
   return (
     <div style={{ padding: 20 }}>
       <h1>🧠 Emotion Driven Dashboard</h1>
 
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        style={{ width: 400, borderRadius: 8, marginTop: 20 }}
-      />
+      <video ref={videoRef} autoPlay playsInline style={{ width: 400 }} />
       <canvas ref={canvasRef} style={{ display: "none" }} />
 
-      <div style={{ marginTop: 20 }}>
-        <button
-          onClick={isAnalyzing ? () => stopAnalysis(true) : startAnalysis}
-          style={{
-            padding: "10px 20px",
-            fontSize: 16,
-            backgroundColor: isAnalyzing ? "#e53e3e" : "#48bb78",
-            border: "none",
-            borderRadius: 8,
-            cursor: "pointer",
-          }}
-        >
-          {isAnalyzing ? "Stop Analysis" : "Start Emotion Analysis"}
+      <div style={{ marginTop: 16 }}>
+        <button onClick={running ? stop : start}>
+          {running ? "Stop Analysis" : "Start Emotion Analysis"}
         </button>
-        <span style={{ marginLeft: 10 }}>Status: {connectionStatus}</span>
+        <span style={{ marginLeft: 12 }}>Status: {status}</span>
       </div>
 
-      {currentEmotion && (
-        <div style={{ marginTop: 20 }}>
-          <h3>Current Emotion: {currentEmotion.emotion}</h3>
-          <small>{currentEmotion.timestamp}</small>
-        </div>
-      )}
-
-      <div style={{ marginTop: 20 }}>
-        <h2>AI Recommendations</h2>
-        <p><strong>Outfit:</strong> {recommendations.outfit}</p>
-        <p><strong>Food:</strong> {recommendations.food}</p>
-        <p><strong>Music:</strong> {recommendations.music}</p>
-        {recommendations.delivery.length > 0 && (
-          <div>
-            <strong>Delivery:</strong>
-            <ul>{recommendations.delivery.map((x, i) => <li key={i}>{x}</li>)}</ul>
-          </div>
-        )}
-      </div>
-
-      {emotionHistory.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h3>Emotion History (last 10)</h3>
-          <ul>
-            {emotionHistory.map((e, i) => (
-              <li key={i}>{e.emotion} – {e.timestamp}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {emotion && <p><b>Emotion:</b> {emotion}</p>}
     </div>
   );
 }

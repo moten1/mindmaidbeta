@@ -1,168 +1,53 @@
-// backend/emotionProxy.js
-// ============================================
-// 🔥 MindMaid Emotion Stream + Real-time Recommendations
-// ============================================
+// backend/routes/emotionRoutes.js
+import express from "express";
+import {
+  getConfig,
+  getRecent,
+  postAnalyze,
+  postFeedback,
+} from "../controllers/emotionController.js";
 
-import { WebSocketServer, WebSocket } from "ws";
-import axios from "axios";
+const router = express.Router();
 
-const HUME_WS_URL = "wss://api.hume.ai/v0/stream/models?models=face";
-const FORWARD_INTERVAL = 2000; // send frame every 2s
-const PING_INTERVAL = 25000;    // Hume keepalive
+/* =================================================
+   Emotion Routes
+   Production-safe, HTTP-only
+   Provides status, recent emotion records, config, analysis, and feedback
+================================================= */
 
-export function createEmotionStreamServer(server) {
-  const wss = new WebSocketServer({ noServer: true });
-  console.log("🧩 Emotion WebSocket proxy initialized at /api/emotion/stream");
-
-  server.on("upgrade", (request, socket, head) => {
-    if (!request.url.startsWith("/api/emotion/stream")) return;
-
-    const HUME_KEY = process.env.HUME_API_KEY;
-    if (!HUME_KEY) {
-      console.error("❌ HUME_API_KEY missing");
-      socket.destroy();
-      return;
-    }
-
-    wss.handleUpgrade(request, socket, head, (clientSocket) => {
-      handleClient(clientSocket, HUME_KEY);
-    });
+// -----------------------------
+// GET /api/emotion/status
+// Returns simple service health/status
+// -----------------------------
+router.get("/status", (req, res) => {
+  res.json({
+    ok: true,
+    service: "emotion",
+    transport: "http-only",
+    timestamp: new Date().toISOString(),
   });
-}
+});
 
-async function getNearbyRestaurants(lat, lng, query = "restaurant") {
-  try {
-    const res = await axios.get("https://maps.googleapis.com/maps/api/place/nearbysearch/json", {
-      params: {
-        key: process.env.GOOGLE_MAPS_API_KEY,
-        location: `${lat},${lng}`,
-        radius: 5000,
-        type: "restaurant",
-        keyword: query,
-      },
-    });
-    return res.data.results.map(r => ({
-      name: r.name,
-      address: r.vicinity,
-      rating: r.rating,
-    }));
-  } catch (err) {
-    console.error("❌ Google Places error:", err?.response?.data || err);
-    return [];
-  }
-}
+// -----------------------------
+// GET /api/emotion/config
+// -----------------------------
+router.get("/config", getConfig);
 
-function handleClient(clientSocket, HUME_KEY) {
-  let humeSocket = null;
-  let latestFrame = null;
-  let forwardTimer = null;
-  let pingTimer = null;
-  let closedByServer = false;
+// -----------------------------
+// GET /api/emotion/recent
+// -----------------------------
+router.get("/recent", getRecent);
 
-  let userLocation = null;
+// -----------------------------
+// POST /api/emotion/analyze
+// Accepts Base64 frame for analysis
+// -----------------------------
+router.post("/analyze", express.json({ limit: "10mb" }), postAnalyze);
 
-  const createHumeSocket = () => {
-    const ws = new WebSocket(HUME_WS_URL, { headers: { Authorization: `Bearer ${HUME_KEY}` } });
+// -----------------------------
+// POST /api/emotion/feedback
+// Accepts user feedback on emotion detection
+// -----------------------------
+router.post("/feedback", express.json({ limit: "5kb" }), postFeedback);
 
-    ws.on("open", () => {
-      console.log("✅ Connected to Hume WebSocket");
-      if (pingTimer) clearInterval(pingTimer);
-      pingTimer = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.ping();
-      }, PING_INTERVAL);
-    });
-
-    ws.on("message", async (data) => {
-      if (clientSocket.readyState !== WebSocket.OPEN) return;
-
-      try {
-        let payload = JSON.parse(data.toString());
-        let emotion = payload.emotion || payload?.data?.face?.emotion || "unknown";
-
-        let nearbyRestaurants = [];
-        if (userLocation) {
-          nearbyRestaurants = await getNearbyRestaurants(
-            userLocation.lat,
-            userLocation.lng,
-            emotionToFood(emotion)
-          );
-        }
-
-        clientSocket.send(JSON.stringify({
-          type: "recommendations",
-          emotion,
-          recommendations: {
-            outfit: emotionToOutfit(emotion),
-            music: emotionToMusic(emotion),
-            food: emotionToFood(emotion),
-            nearbyRestaurants
-          }
-        }));
-      } catch (err) {
-        console.error("❌ Error processing Hume message:", err);
-      }
-    });
-
-    ws.on("close", () => {
-      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-      if (!closedByServer) setTimeout(() => { humeSocket = createHumeSocket(); }, 5000);
-    });
-
-    ws.on("error", (err) => console.error("❌ Hume socket error:", err));
-    return ws;
-  };
-
-  humeSocket = createHumeSocket();
-
-  clientSocket.on("message", (msg, isBinary) => {
-    try {
-      if (isBinary) {
-        latestFrame = Buffer.from(msg);
-      } else {
-        const data = JSON.parse(msg.toString());
-        if (data.type === "location") {
-          userLocation = { lat: data.lat, lng: data.lng };
-        } else if (data.type === "control" && data.action === "stop") {
-          cleanup();
-        }
-      }
-    } catch (err) {
-      console.error("❌ Client message error:", err);
-    }
-  });
-
-  clientSocket.on("close", cleanup);
-  clientSocket.on("error", cleanup);
-
-  forwardTimer = setInterval(() => {
-    if (!latestFrame || !humeSocket || humeSocket.readyState !== WebSocket.OPEN) return;
-    humeSocket.send(latestFrame, { binary: true });
-    latestFrame = null;
-  }, FORWARD_INTERVAL);
-
-  function cleanup() {
-    closedByServer = true;
-    if (forwardTimer) clearInterval(forwardTimer);
-    if (pingTimer) clearInterval(pingTimer);
-    try { if (humeSocket) humeSocket.close(); } catch(e){}
-    try { if (clientSocket) clientSocket.close(); } catch(e){}
-  }
-}
-
-// =======================
-// Helper recommendation functions
-// =======================
-function emotionToOutfit(emotion) {
-  const map = { happy: "Bright casual outfit", sad: "Cozy sweater", neutral: "Smart casual", angry: "Dark tones", stress: "Comfort wear" };
-  return map[emotion] || "Comfort wear";
-}
-
-function emotionToMusic(emotion) {
-  const map = { happy: "Upbeat pop", sad: "Soft jazz", neutral: "Ambient", angry: "Rock", stress: "Lo-fi chill" };
-  return map[emotion] || "Ambient";
-}
-
-function emotionToFood(emotion) {
-  const map = { happy: "Fruit salad", sad: "Chocolate", neutral: "Sandwich", angry: "Spicy curry", stress: "Smoothie" };
-  return map[emotion] || "Snack";
-}
+export default router;
