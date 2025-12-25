@@ -1,0 +1,69 @@
+// backend/emotionEngine/emotionSessionStore.js
+// ============================================
+// 🧠 Emotion Session Memory (Phase 0.7)
+// In-memory, swappable, safe
+// ============================================
+
+const sessions = new Map();
+
+function initSession(sessionId) {
+  if (!sessions.has(sessionId)) {
+    sessions.set(sessionId, {
+      startedAt: Date.now(),
+      samples: [],
+    });
+  }
+}
+
+function recordEmotion(sessionId, emotionData) {
+  initSession(sessionId);
+
+  const session = sessions.get(sessionId);
+  session.samples.push({
+    emotion: emotionData.primary,
+    confidence: emotionData.confidence,
+    ts: Date.now(),
+  });
+
+  // cap memory (safety)
+  if (session.samples.length > 300) {
+    session.samples.shift();
+  }
+}
+
+function summarizeSession(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session || session.samples.length === 0) return null;
+
+  const counts = {};
+  let confidenceSum = 0;
+
+  session.samples.forEach((s) => {
+    counts[s.emotion] = (counts[s.emotion] || 0) + 1;
+    confidenceSum += s.confidence;
+  });
+
+  const dominantEmotion = Object.entries(counts).sort(
+    (a, b) => b[1] - a[1]
+  )[0][0];
+
+  return {
+    durationMs: Date.now() - session.startedAt,
+    samples: session.samples.length,
+    dominantEmotion,
+    avgConfidence: Number(
+      (confidenceSum / session.samples.length).toFixed(3)
+    ),
+    volatility: Object.keys(counts).length, // simple & effective
+  };
+}
+
+function closeSession(sessionId) {
+  sessions.delete(sessionId);
+}
+
+export {
+  recordEmotion,
+  summarizeSession,
+  closeSession,
+};
