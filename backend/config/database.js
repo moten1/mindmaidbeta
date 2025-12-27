@@ -14,9 +14,16 @@ export const connectDB = async () => {
   }
 
   const MONGODB_URI = process.env.MONGODB_URI || process.env.DATABASE_URL;
+  const SKIP_DB = process.env.SKIP_DB === "true" || process.env.NODE_ENV === "test";
 
   if (!MONGODB_URI) {
-    throw new Error("MONGODB_URI or DATABASE_URL not defined");
+    if (SKIP_DB) {
+      logger.warn("⚠️  Database disabled (SKIP_DB=true or NODE_ENV=test)");
+      isConnected = false;
+      return;
+    }
+    logger.warn("⚠️  MONGODB_URI not defined — attempting local MongoDB");
+    // Fallback to local MongoDB if available
   }
 
   try {
@@ -27,10 +34,11 @@ export const connectDB = async () => {
       family: 4, // Use IPv4
     };
 
-    await mongoose.connect(MONGODB_URI, options);
+    const uri = MONGODB_URI || "mongodb://localhost:27017/mindmaid";
+    await mongoose.connect(uri, options);
 
     isConnected = true;
-    logger.info("MongoDB connected successfully");
+    logger.info("✅ MongoDB connected successfully");
 
     // Connection event handlers
     mongoose.connection.on("error", (err) => {
@@ -54,8 +62,15 @@ export const connectDB = async () => {
       process.exit(0);
     });
   } catch (error) {
-    logger.error("MongoDB connection failed:", error);
-    throw error;
+    if (SKIP_DB) {
+      logger.warn("⚠️  Database connection skipped (SKIP_DB enabled)");
+      isConnected = false;
+      return;
+    }
+    logger.warn("⚠️  MongoDB connection failed — running without database");
+    logger.debug("Error details:", error.message);
+    isConnected = false;
+    // Don't throw — allow app to run without database
   }
 };
 

@@ -59,3 +59,17 @@ export const postAnalyze = async (req, res) => {
 export const getRecent = (req, res) => {
   res.json(recentEmotions);
 };
+export const postFeedback = (req, res) => {
+  try {
+    const { emotion, accuracy } = req.body;
+    if (!emotion) return res.status(400).json({ error: "Emotion label required" });
+
+    // Log feedback for model improvement
+    console.log(`📊 Feedback: ${emotion} (accuracy: ${accuracy})`);
+    
+    res.json({ ok: true, message: "Feedback recorded" });
+  } catch (err) {
+    console.error("❌ Feedback error:", err);
+    res.status(500).json({ error: "Failed to record feedback" });
+  }
+};
