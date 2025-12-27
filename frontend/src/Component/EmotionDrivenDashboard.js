@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 
 /* ======================================================
    STRICT ENV CONFIG (FAIL FAST)
@@ -174,7 +174,7 @@ export default function EmotionDrivenDashboard() {
     }
   };
 
-  const stop = () => {
+  const stop = useCallback(() => {
     runningRef.current = false;
     clearInterval(frameTimerRef.current);
     clearTimeout(reconnectTimerRef.current);
@@ -182,12 +182,11 @@ export default function EmotionDrivenDashboard() {
     stopCamera();
     setRunning(false);
     setStatus("disconnected");
-  };
+  }, []);
 
   useEffect(() => {
     return () => stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [stop]);
 
   /* ======================================================
      UI
