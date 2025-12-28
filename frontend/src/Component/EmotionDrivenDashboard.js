@@ -163,7 +163,8 @@ export default function EmotionDrivenDashboard() {
   /* ======================================================
      START / STOP
   ====================================================== */
-  const start = async () => {
+  const 
+  start = async () => {
     try {
       runningRef.current = true;
       setRunning(true);
