@@ -54,8 +54,27 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
 
 app.use((req, res, next) => {
+  // Security headers
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-Content-Type-Options", "nosniff");
+  
+  // 🎥 CRITICAL: Allow camera/microphone access in browser
+  // Required for getUserMedia() to work in production
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(self), microphone=(self), geolocation=(self)"
+  );
+  
+  // Legacy Feature-Policy (for older browsers)
+  res.setHeader(
+    "Feature-Policy",
+    "camera 'self'; microphone 'self'; geolocation 'self'"
+  );
+  
+  // CORS for WebSocket
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  
   next();
 });
 
