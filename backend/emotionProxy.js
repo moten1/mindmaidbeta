@@ -4,7 +4,7 @@
 // Session-aware, path-locked, observable
 // ============================================
 
-import WebSocket from "ws";
+import { WebSocketServer } from "ws";
 import crypto from "crypto";
 import { analyzeEmotion } from "./emotionEngine/index.js";
 import {
@@ -16,7 +16,7 @@ import {
 const EMOTION_WS_PATH = "/api/emotion/stream";
 
 export function createEmotionStreamServer(server) {
-  const wss = new WebSocket.Server({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true });
   const clients = new Set();
 
   /* --------------------------------------------

@@ -1,6 +1,6 @@
 {
   "name": "mindmaid-backend",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "MindMaid AI backend server with caching, rate limiting, logging, and database support",
   "main": "server.js",
   "type": "module",

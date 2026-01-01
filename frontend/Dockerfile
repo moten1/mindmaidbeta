@@ -3,7 +3,9 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+ENV CI=false
 RUN npm run build
+
 FROM node:18-alpine
 WORKDIR /usr/src/app
 RUN npm install -g serve
