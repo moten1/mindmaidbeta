@@ -48,12 +48,39 @@ export default function EmotionDrivenDashboard() {
   ====================================================== */
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      // Check if getUserMedia is available
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error(
+          "❌ getUserMedia not supported. Ensure HTTPS connection and browser supports camera access."
+        );
+      }
+
+      console.log("📷 Requesting camera access...");
+      
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { min: 320, ideal: 640, max: 1280 },
+          height: { min: 240, ideal: 480, max: 720 },
+        },
+      });
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        console.log("✅ Camera stream started successfully");
       }
     } catch (err) {
-      console.error("❌ Camera access denied:", err);
+      const errorMap = {
+        NotAllowedError: "❌ Camera permission denied. Please allow camera access in browser settings.",
+        NotFoundError: "❌ No camera device found. Check if camera is connected.",
+        NotReadableError: "❌ Camera is in use by another application.",
+        SecurityError: "❌ HTTPS required. Camera access only works over secure connection.",
+        TypeError: "❌ Camera request invalid. Check browser compatibility.",
+      };
+      
+      const message = errorMap[err.name] || `❌ Camera error: ${err.message}`;
+      console.error(message, err);
+      
       setStatus("camera_error");
       throw err;
     }
@@ -114,12 +141,14 @@ export default function EmotionDrivenDashboard() {
     if (!runningRef.current) return;
 
     setStatus("connecting");
+    console.log(`🔌 Connecting to WS: ${WS_URL}`);
 
     const ws = new WebSocket(WS_URL);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
     ws.onopen = () => {
+      console.log("✅ WebSocket connected");
       setStatus("connected");
       setFrameInterval(fpsRef.current);
     };
@@ -145,7 +174,8 @@ export default function EmotionDrivenDashboard() {
       adaptFPS(changed);
     };
 
-    ws.onerror = () => {
+    ws.onerror = (error) => {
+      console.error("❌ WebSocket error:", error);
       setStatus("error");
     };
 
