@@ -1,33 +1,20 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 
 /* ======================================================
-   STRICT ENV CONFIG (FAIL FAST)
+   STRICT ENV CONFIG (REVISED FOR PRODUCTION)
 ====================================================== */
-const RAW_WS_HOST =
-  process.env.REACT_APP_WS_URL_PROD ||
-  process.env.REACT_APP_WS_URL;
+const getWsUrl = () => {
+  const host = process.env.REACT_APP_WS_URL_PROD || process.env.REACT_APP_WS_URL || window.location.origin.replace(/^http/, 'ws');
+  const path = process.env.REACT_APP_WS_PATH || "/api/emotion/stream";
+  
+  // Clean the host and force WSS in production
+  const cleanHost = host.replace(/\/$/, "");
+  return `${cleanHost}${path}`.replace(/^http/, 'ws');
+};
 
-const WS_PATH =
-  process.env.REACT_APP_WS_PATH || "/api/emotion/stream";
-
-if (!RAW_WS_HOST) {
-  throw new Error("❌ REACT_APP_WS_URL(_PROD) is NOT defined");
-}
-
-// Force WS/WSS protocol
-const WS_HOST = RAW_WS_HOST
-  .replace(/^http:\/\//, "ws://")
-  .replace(/^https:\/\//, "wss://")
-  .replace(/\/$/, "");
-
-const WS_URL = `${WS_HOST}${WS_PATH}`;
-
-const DEFAULT_FPS = Number(process.env.REACT_APP_DEFAULT_FPS) || 4;
+const DEFAULT_FPS = 4;
 const RECONNECT_DELAY = 3000;
 
-/* ======================================================
-   COMPONENT
-====================================================== */
 export default function EmotionDrivenDashboard() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -41,46 +28,20 @@ export default function EmotionDrivenDashboard() {
   const [status, setStatus] = useState("disconnected");
   const [running, setRunning] = useState(false);
   const [emotion, setEmotion] = useState(null);
-  const [history, setHistory] = useState([]);
 
   /* ======================================================
-     CAMERA
+     CAMERA LOGIC
   ====================================================== */
   const startCamera = async () => {
     try {
-      // Check if getUserMedia is available
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error(
-          "❌ getUserMedia not supported. Ensure HTTPS connection and browser supports camera access."
-        );
-      }
-
-      console.log("📷 Requesting camera access...");
-      
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "user",
-          width: { min: 320, ideal: 640, max: 1280 },
-          height: { min: 240, ideal: 480, max: 720 },
-        },
+        video: { facingMode: "user", width: 640, height: 480 },
       });
-
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        console.log("✅ Camera stream started successfully");
       }
     } catch (err) {
-      const errorMap = {
-        NotAllowedError: "❌ Camera permission denied. Please allow camera access in browser settings.",
-        NotFoundError: "❌ No camera device found. Check if camera is connected.",
-        NotReadableError: "❌ Camera is in use by another application.",
-        SecurityError: "❌ HTTPS required. Camera access only works over secure connection.",
-        TypeError: "❌ Camera request invalid. Check browser compatibility.",
-      };
-      
-      const message = errorMap[err.name] || `❌ Camera error: ${err.message}`;
-      console.error(message, err);
-      
+      console.error("❌ Camera Error:", err);
       setStatus("camera_error");
       throw err;
     }
@@ -89,13 +50,11 @@ export default function EmotionDrivenDashboard() {
   const stopCamera = () => {
     const stream = videoRef.current?.srcObject;
     stream?.getTracks()?.forEach((t) => t.stop());
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+    if (videoRef.current) videoRef.current.srcObject = null;
   };
 
   /* ======================================================
-     FRAME CAPTURE
+     WEBSOCKET & FRAME CAPTURE
   ====================================================== */
   const sendFrame = () => {
     const ws = wsRef.current;
@@ -107,100 +66,47 @@ export default function EmotionDrivenDashboard() {
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0);
 
-    canvas.toBlob(
-      (blob) => blob && ws.send(blob),
-      "image/jpeg",
-      0.8
-    );
+    canvas.toBlob((blob) => blob && ws.send(blob), "image/jpeg", 0.6);
   };
 
-  const setFrameInterval = (fps) => {
-    clearInterval(frameTimerRef.current);
-    fpsRef.current = fps;
-    frameTimerRef.current = setInterval(sendFrame, 1000 / fps);
-  };
-
-  /* ======================================================
-     FPS ADAPTATION (STABLE)
-  ====================================================== */
-  const adaptFPS = (emotionChanged) => {
-    const targetFPS = emotionChanged ? 6 : 2;
-    if (fpsRef.current !== targetFPS) {
-      setFrameInterval(targetFPS);
-    }
-  };
-
-  /* ======================================================
-     WEBSOCKET
-  ====================================================== */
   const connectWS = () => {
     if (!runningRef.current) return;
-
+    const WS_URL = getWsUrl();
+    
     setStatus("connecting");
-    console.log(`🔌 Connecting to WS: ${WS_URL}`);
-
     const ws = new WebSocket(WS_URL);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log("✅ WebSocket connected");
       setStatus("connected");
-      setFrameInterval(fpsRef.current);
+      frameTimerRef.current = setInterval(sendFrame, 1000 / fpsRef.current);
     };
 
     ws.onmessage = (event) => {
-      if (typeof event.data !== "string") return;
-
-      let data;
       try {
-        data = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-
-      if (!data.emotion) return;
-
-      const changed = lastEmotionRef.current !== data.emotion;
-      lastEmotionRef.current = data.emotion;
-
-      setEmotion(data.emotion);
-      setHistory((h) => [data.emotion, ...h.slice(0, 9)]);
-
-      adaptFPS(changed);
-    };
-
-    ws.onerror = (error) => {
-      console.error("❌ WebSocket error:", error);
-      setStatus("error");
+        const data = JSON.parse(event.data);
+        if (data.emotion) setEmotion(data.emotion);
+      } catch (e) { /* ignore non-json */ }
     };
 
     ws.onclose = () => {
       clearInterval(frameTimerRef.current);
-      wsRef.current = null;
+      if (runningRef.current) setTimeout(connectWS, RECONNECT_DELAY);
       setStatus("disconnected");
-
-      if (runningRef.current) {
-        reconnectTimerRef.current = setTimeout(connectWS, RECONNECT_DELAY);
-      }
     };
   };
 
-  /* ======================================================
-     START / STOP
-  ====================================================== */
-  const 
-  start = async () => {
+  const start = async () => {
     try {
       runningRef.current = true;
       setRunning(true);
       await startCamera();
       connectWS();
-    } catch {
+    } catch (e) {
       stop();
     }
   };
@@ -208,47 +114,42 @@ export default function EmotionDrivenDashboard() {
   const stop = useCallback(() => {
     runningRef.current = false;
     clearInterval(frameTimerRef.current);
-    clearTimeout(reconnectTimerRef.current);
     wsRef.current?.close();
     stopCamera();
     setRunning(false);
     setStatus("disconnected");
   }, []);
 
-  useEffect(() => {
-    return () => stop();
-  }, [stop]);
-
-  /* ======================================================
-     UI
-  ====================================================== */
   return (
-    <div style={{ padding: 20 }}>
-      <h1>🧠 Emotion Driven Dashboard</h1>
+    <div style={styles.container}>
+      <h2 style={styles.title}>🧠 MindMaid AI</h2>
+      
+      <div style={styles.videoBox}>
+        <video ref={videoRef} autoPlay playsInline muted style={styles.video} />
+        
+        {!running && (
+          <div style={styles.overlay}>
+            <button onClick={start} style={styles.startBtn}>
+              START ANALYSIS
+            </button>
+          </div>
+        )}
 
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        style={{ width: 400, borderRadius: 8 }}
-      />
-
-      <canvas ref={canvasRef} style={{ display: "none" }} />
-
-      <div style={{ marginTop: 16 }}>
-        <button onClick={running ? stop : start}>
-          {running ? "Stop Analysis" : "Start Emotion Analysis"}
-        </button>
-        <span style={{ marginLeft: 12 }}>Status: {status}</span>
+        {emotion && <div style={styles.badge}>{emotion.toUpperCase()}</div>}
       </div>
 
-      {emotion && (
-        <p>
-          <b>Emotion:</b> {emotion}
-        </p>
-      )}
+      <canvas ref={canvasRef} style={{ display: "none" }} />
+      <p style={{ color: '#888' }}>Status: {status}</p>
     </div>
   );
 }
-// Force Update Jan 2026 
+
+const styles = {
+  container: { textAlign: 'center', padding: '20px', backgroundColor: '#0a1a12', minHeight: '100vh', color: 'white' },
+  title: { color: '#facc15', marginBottom: '20px' },
+  videoBox: { position: 'relative', width: '100%', maxWidth: '500px', margin: '0 auto', borderRadius: '12px', overflow: 'hidden', background: '#000' },
+  video: { width: '100%', display: 'block' },
+  overlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', justifyContent: 'center', alignItems: 'center', background: 'rgba(0,0,0,0.7)' },
+  startBtn: { padding: '15px 30px', fontSize: '18px', backgroundColor: '#facc15', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' },
+  badge: { position: 'absolute', top: 10, right: 10, padding: '5px 15px', background: '#facc15', color: '#000', borderRadius: '5px', fontWeight: 'bold' }
+};
