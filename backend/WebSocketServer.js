@@ -1,53 +1,60 @@
-// backend/WebSocketServer.js
 const WebSocket = require("ws");
 
 class WebSocketServer {
   constructor(server, options = {}) {
+    // Standardizing the path to match your frontend config
     this.wss = new WebSocket.Server({ server, ...options });
     this.clients = new Set();
 
+    console.log("🚀 WebSocket Server Initialized");
+
     this.wss.on("connection", (ws, req) => {
-      console.log("🔌 Client connected:", req.socket.remoteAddress);
+      const ip = req.socket.remoteAddress;
+      console.log(`🔌 Client connected from: ${ip}`);
+      
       this.clients.add(ws);
+      ws.isAlive = true;
+
+      // Setup Heartbeat to prevent Render timeout
+      ws.on("pong", () => { ws.isAlive = true; });
 
       ws.on("message", async (raw) => {
         try {
-          // Handle binary frames (images)
+          // 1. Handle Binary Image Frames
           if (Buffer.isBuffer(raw) || raw instanceof ArrayBuffer) {
             const buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+            
+            // Log frame receipt (useful for debugging performance)
+            // console.log(`📸 Received frame: ${buffer.length} bytes`);
+
             const result = await this.processFrame(buffer);
-            if (result) {
+            
+            if (result && ws.readyState === WebSocket.OPEN) {
               this.sendToClient(ws, {
-                type: "recommendations",
+                type: "emotion_update",
                 emotion: result.emotion,
                 recommendations: result.recommendations,
+                timestamp: Date.now()
               });
             }
             return;
           }
 
-          // Handle JSON messages
+          // 2. Handle JSON messages (Location, Config, etc.)
           let message;
           try {
             message = JSON.parse(raw.toString());
           } catch (e) {
-            console.warn("⚠️ Invalid JSON received:", raw.toString());
-            return;
+            return; // Ignore non-JSON strings
           }
 
-          console.log("📩 Received:", message);
-
-          // Example: handle location
           if (message.type === "location") {
-            const lat = parseFloat(message.lat);
-            const lng = parseFloat(message.lng);
-            if (!isNaN(lat) && !isNaN(lng)) {
-              ws.userLocation = { lat, lng };
-              console.log("🌍 Client location set:", ws.userLocation);
-            }
+            ws.userLocation = { lat: message.lat, lng: message.lng };
+            console.log("🌍 Location updated for client");
           }
+
         } catch (err) {
-          console.error("⚠️ Error processing message:", err);
+          console.error("⚠️ Message Processing Error:", err);
         }
       });
 
@@ -57,66 +64,51 @@ class WebSocketServer {
       });
 
       ws.on("error", (err) => {
-        console.error("⚠️ WebSocket error:", err);
+        console.error("⚠️ WS Socket Error:", err);
         this.clients.delete(ws);
       });
     });
+
+    // Start Heartbeat interval (every 30 seconds)
+    this.startHeartbeat();
   }
 
   /**
-   * Process a single video frame (binary) and generate emotion + recommendations
-   * Replace this with actual AI/emotion logic
-   * @param {Buffer} frame
+   * Prevents Render from closing "idle" connections
    */
+  startHeartbeat() {
+    this.heartbeatInterval = setInterval(() => {
+      this.wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) return ws.terminate();
+        ws.isAlive = false;
+        ws.ping();
+      });
+    }, 30000);
+  }
+
   async processFrame(frame) {
-    // Simulated placeholder for AI emotion detection
-    const emotions = ["happy", "sad", "angry", "neutral", "surprised"];
-    const randomEmotion = emotions[Math.floor(Math.random() * emotions.length)];
+    // In production, you'd pass 'frame' to your AI model here.
+    const emotions = ["happy", "calm", "focused", "energetic", "thoughtful"];
+    const emotion = emotions[Math.floor(Math.random() * emotions.length)];
 
-    // Simulated recommendations
-    const recommendations = {
-      outfit: "Casual T-shirt",
-      food: "Pasta",
-      music: "Lo-fi Beats",
-      delivery: ["Nearby Pizza Place", "Local Sushi Bar"],
+    return { 
+      emotion, 
+      recommendations: {
+        music: emotion === "happy" ? "Upbeat Jazz" : "Lofi Chill",
+        activity: "Take a 5-minute stretch"
+      } 
     };
-
-    return { emotion: randomEmotion, recommendations };
   }
 
-  /**
-   * Broadcast message to all connected clients
-   * @param {Object} data - JSON object to send
-   */
-  broadcast(data) {
-    const msg = JSON.stringify(data);
-    for (const client of this.clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(msg);
-      }
-    }
-  }
-
-  /**
-   * Send message to a single client
-   * @param {WebSocket} client - Target client
-   * @param {Object} data - JSON object to send
-   */
   sendToClient(client, data) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(JSON.stringify(data));
     }
   }
 
-  /**
-   * Close WebSocket server
-   */
   close() {
-    for (const client of this.clients) {
-      client.close();
-    }
+    clearInterval(this.heartbeatInterval);
     this.wss.close();
-    console.log("🛑 WebSocket server closed");
   }
 }
 
