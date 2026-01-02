@@ -1,7 +1,6 @@
 // backend/server.js
 // ============================================
-// 🌟 MindMaid Backend Server (Stable Production Build)
-// Phase 0.2 — Health + WS Observability (SAFE)
+// 🌟 MindMaid Backend Server (Production Optimized)
 // ============================================
 
 import express from "express";
@@ -16,88 +15,37 @@ import { fileURLToPath, pathToFileURL } from "url";
 
 import { createEmotionStreamServer } from "./emotionProxy.js";
 
-// -----------------------------
-// Paths
-// -----------------------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// -----------------------------
-// Load env
-// -----------------------------
 dotenv.config();
-console.log("🌱 Environment loaded");
 
-// -----------------------------
-// Express App
-// -----------------------------
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
 const NODE_ENV = process.env.NODE_ENV || "production";
 
 // -----------------------------
-// CORS (Render Safe)
+// 1. GLOBAL MIDDLEWARE
 // -----------------------------
-app.use(
-  cors({
-    origin: "*",
-    credentials: false,
-  })
-);
-
-// -----------------------------
-// Middleware
-// -----------------------------
+app.use(cors({ origin: "*", credentials: false }));
 app.use(compression());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
 
-app.use((req, res, next) => {
-  // Security headers
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  
-  // 🎥 CRITICAL: Allow camera/microphone access in browser
-  // Required for getUserMedia() to work in production
-  res.setHeader(
-    "Permissions-Policy",
-    "camera=(self), microphone=(self), geolocation=(self)"
-  );
-  
-  // Legacy Feature-Policy (for older browsers)
-  res.setHeader(
-    "Feature-Policy",
-    "camera 'self'; microphone 'self'; geolocation 'self'"
-  );
-  
-  // CORS for WebSocket
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  
-  next();
-});
-
 // -----------------------------
-// Health Route (Extended)
+// 2. PRIMARY HEALTH CHECK (Must be above Static Files)
 // -----------------------------
 app.get("/api/health", (req, res) => {
-  const mem = process.memoryUsage();
-  res.json({
+  res.status(200).json({
     ok: true,
-    uptime: Math.floor(process.uptime()),
-    env: NODE_ENV,
-    port: PORT,
-    memory: {
-      rss: Math.round(mem.rss / 1024 / 1024) + " MB",
-      heapUsed: Math.round(mem.heapUsed / 1024 / 1024) + " MB",
-    },
-    timestamp: new Date().toISOString(),
+    status: "online",
+    serverTime: new Date().toISOString()
   });
 });
 
 // -----------------------------
-// Route Loader
+// 3. ROUTE LOADER (API ROUTES)
 // -----------------------------
 const ROUTES = [
   { p: "/api/auth", f: "./routes/authRoutes.js" },
@@ -111,116 +59,64 @@ const ROUTES = [
 const loadRoutes = async () => {
   for (const r of ROUTES) {
     const fullPath = path.join(__dirname, r.f);
-    if (!fs.existsSync(fullPath)) {
-      console.warn(`⚠️ Missing route: ${r.f}`);
-      continue;
-    }
-    try {
-      const mod = await import(pathToFileURL(fullPath).href);
-      app.use(r.p, mod.default || mod);
-      console.log(`📌 Loaded route: ${r.p}`);
-    } catch (err) {
-      console.error(`❌ Failed route load: ${r.f}`, err);
+    if (fs.existsSync(fullPath)) {
+      try {
+        const mod = await import(pathToFileURL(fullPath).href);
+        app.use(r.p, mod.default || mod);
+        console.log(`📌 Route Active: ${r.p}`);
+      } catch (err) {
+        console.error(`❌ Route Failed: ${r.p}`, err.message);
+      }
     }
   }
 };
 
+// Execute Load
 await loadRoutes();
 
 // -----------------------------
-// HTTP Server (BEFORE WS)
+// 4. STATIC FRONTEND SERVING
+// -----------------------------
+// Adjusting path to look for the 'build' folder correctly in Render's structure
+const buildPath = path.resolve(__dirname, "../frontend/build");
+
+if (fs.existsSync(buildPath)) {
+  console.log("🎨 Frontend build detected. Serving static files...");
+  app.use(express.static(buildPath));
+
+  // The Catch-all for React (Placed AFTER API routes)
+  app.get("*", (req, res) => {
+    // If a request hits here and starts with /api, it means it missed all valid routes
+    if (req.url.startsWith("/api")) {
+      return res.status(404).json({ error: "API Endpoint Not Found" });
+    }
+    // Otherwise, serve the React App
+    res.sendFile(path.join(buildPath, "index.html"));
+  });
+} else {
+  console.warn("⚠️ No frontend build found at:", buildPath);
+}
+
+// -----------------------------
+// 5. SERVER INITIALIZATION
 // -----------------------------
 const server = http.createServer(app);
 
-// -----------------------------
-// WS Proxy Init
-// -----------------------------
-let wsServerRef = null;
-
 try {
-  wsServerRef = createEmotionStreamServer(server);
-  console.log("🔌 Emotion WebSocket Proxy Ready");
+  // Initialize WebSocket for Emotion Streaming
+  createEmotionStreamServer(server);
+  console.log("🔌 Emotion WebSocket Ready");
 } catch (e) {
-  console.error("❌ WS Proxy Error:", e);
+  console.error("❌ WS Error:", e.message);
 }
 
-// -----------------------------
-// WS HEARTBEAT (Phase 0.2)
-// -----------------------------
-setInterval(() => {
-  try {
-    const clients =
-      wsServerRef?.wss?.clients?.size ?? "unknown";
-
-    console.log(
-      JSON.stringify({
-        level: "info",
-        event: "ws_heartbeat",
-        clients,
-        uptime: Math.floor(process.uptime()),
-        memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
-        ts: new Date().toISOString(),
-      })
-    );
-  } catch (e) {
-    console.warn("⚠️ WS heartbeat error:", e.message);
-  }
-}, 30000);
-
-// -----------------------------
-// Serve Frontend Build (if exists)
-// -----------------------------
-const buildPath = path.resolve(__dirname, "../frontend/build");
-const indexPath = path.join(buildPath, "index.html");
-
-if (fs.existsSync(buildPath)) {
-  console.log("🎨 Serving frontend build...");
-  app.use(express.static(buildPath));
-
-  app.get("*", (req, res) => {
-    if (req.url.startsWith("/api")) {
-      return res.status(404).json({ error: "Not found" });
-    }
-    return res.sendFile(indexPath);
-  });
-} else {
-  console.warn("⚠️ No frontend build found.");
-}
-
-// -----------------------------
-// Start Server
-// -----------------------------
 server.listen(PORT, "0.0.0.0", () => {
   console.log("============================================");
-  console.log("🚀 MindMaid Backend Online");
-  console.log(`📡 Port: ${PORT}`);
-  console.log(`🌍 Env: ${NODE_ENV}`);
-  console.log(`🖥 Serving Frontend: ${fs.existsSync(buildPath) ? "YES" : "NO"}`);
+  console.log(`🚀 SERVER RUNNING ON PORT: ${PORT}`);
+  console.log(`🌍 MODE: ${NODE_ENV}`);
   console.log("============================================");
 });
 
-// -----------------------------
 // Graceful Shutdown
-// -----------------------------
-const shutdown = (signal) => {
-  console.log(`\n${signal} received — closing server...`);
-  server.close(() => {
-    console.log("⚡ Server closed gracefully");
-    process.exit(0);
-  });
-  setTimeout(() => {
-    console.warn("⏱ Forced shutdown");
-    process.exit(1);
-  }, 8000);
-};
-
-["SIGTERM", "SIGINT"].forEach((sig) =>
-  process.on(sig, () => shutdown(sig))
-);
-
-process.on("unhandledRejection", (r) => {
-  console.error("❌ Unhandled Rejection:", r);
-});
-process.on("uncaughtException", (e) => {
-  console.error("❌ Uncaught Exception:", e);
-});
+process.on("SIGTERM", () => server.close());
+process.on("SIGINT", () => server.close());
