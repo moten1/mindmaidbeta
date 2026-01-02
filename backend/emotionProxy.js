@@ -1,6 +1,6 @@
 // backend/emotionProxy.js
 // ============================================
-// 🧠 Emotion WebSocket Proxy (Phase 0.7)
+// 🧠 Emotion WebSocket Proxy (Hardenend for Render)
 // Session-aware, path-locked, observable
 // ============================================
 
@@ -16,20 +16,23 @@ import {
 const EMOTION_WS_PATH = "/api/emotion/stream";
 
 export function createEmotionStreamServer(server) {
+  // We use noServer: true because we handle the upgrade manually
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set();
 
   /* --------------------------------------------
-     Upgrade Handler (PATH-LOCKED)
+      Upgrade Handler (FLEXIBLE PATH MATCHING)
   --------------------------------------------*/
   server.on("upgrade", (req, socket, head) => {
     try {
-      if (req.headers.upgrade?.toLowerCase() !== "websocket") {
-        socket.destroy();
-        return;
-      }
+      const { pathname } = new URL(req.url, `http://${req.headers.host}`);
+      
+      console.log(`🔌 Upgrade request received for: ${pathname}`);
 
-      if (req.url !== EMOTION_WS_PATH) {
+      // Check if the request is for our specific WebSocket path
+      if (pathname !== EMOTION_WS_PATH) {
+        console.warn(`⚠️ Rejecting WS connection: Wrong path (${pathname})`);
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
         socket.destroy();
         return;
       }
@@ -37,13 +40,14 @@ export function createEmotionStreamServer(server) {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
       });
-    } catch {
+    } catch (err) {
+      console.error("❌ WS Upgrade Error:", err.message);
       socket.destroy();
     }
   });
 
   /* --------------------------------------------
-     WebSocket Connection
+      WebSocket Connection Logic
   --------------------------------------------*/
   wss.on("connection", (ws) => {
     clients.add(ws);
@@ -51,11 +55,7 @@ export function createEmotionStreamServer(server) {
     ws.sessionId = crypto.randomUUID();
 
     console.log(
-      "🔌 Emotion WS connected",
-      "| session:",
-      ws.sessionId,
-      "| clients:",
-      clients.size
+      `✅ Emotion WS Connected | Session: ${ws.sessionId} | Total Clients: ${clients.size}`
     );
 
     ws.on("pong", () => {
@@ -64,82 +64,67 @@ export function createEmotionStreamServer(server) {
 
     ws.on("message", async (msg) => {
       try {
-        const input =
-          msg instanceof Buffer
-            ? { frame: msg, ts: Date.now() }
-            : {};
+        // Handle incoming binary frame (JPEG)
+        const input = { 
+          frame: msg, // This is the buffer from your laptop camera
+          ts: Date.now() 
+        };
 
         const result = await analyzeEmotion(input);
 
-        // 🧠 Record emotion into session memory
+        // Record into session memory for later summary
         recordEmotion(ws.sessionId, result);
 
-        ws.send(
-          JSON.stringify({
-            type: "emotion",
-            sessionId: ws.sessionId,
-            ...result,
-            ts: Date.now(),
-          })
-        );
+        // Send results back to frontend
+        if (ws.readyState === 1) { // 1 = OPEN
+          ws.send(
+            JSON.stringify({
+              type: "emotion",
+              sessionId: ws.sessionId,
+              ...result,
+              ts: Date.now(),
+            })
+          );
+        }
       } catch (e) {
-        console.error("❌ WS message error:", e.message);
+        console.error("❌ WS Frame Processing Error:", e.message);
       }
     });
 
-    ws.on("close", () => {
+    ws.on("close", (code, reason) => {
       const summary = summarizeSession(ws.sessionId);
-
       if (summary) {
-        console.log("🧠 Emotion session summary:", summary);
+        console.log(`🧠 Session Summary [${ws.sessionId}]:`, summary);
       }
 
       closeSession(ws.sessionId);
       clients.delete(ws);
-
-      console.log(
-        "❌ Emotion WS disconnected",
-        "| session:",
-        ws.sessionId,
-        "| clients:",
-        clients.size
-      );
+      console.log(`❌ WS Disconnected | Code: ${code} | Remaining: ${clients.size}`);
     });
 
     ws.on("error", (err) => {
-      closeSession(ws.sessionId);
+      console.warn(`⚠️ WS Socket Error [${ws.sessionId}]:`, err.message);
       clients.delete(ws);
-      console.warn("⚠️ Emotion WS error:", err.message);
     });
   });
 
   /* --------------------------------------------
-     Heartbeat (Stability)
+      Heartbeat (Keeps Render connection alive)
   --------------------------------------------*/
   const heartbeat = setInterval(() => {
-    for (const ws of clients) {
-      if (!ws.isAlive) {
-        closeSession(ws.sessionId);
-        ws.terminate();
-        clients.delete(ws);
-        continue;
+    wss.clients.forEach((ws) => {
+      if (ws.isAlive === false) {
+        console.log(`💀 Terminating inactive session: ${ws.sessionId}`);
+        return ws.terminate();
       }
       ws.isAlive = false;
       ws.ping();
-    }
+    });
   }, 30000);
 
-  console.log(
-    "🧠 Emotion WebSocket proxy initialized @",
-    EMOTION_WS_PATH
-  );
+  wss.on('close', () => {
+    clearInterval(heartbeat);
+  });
 
-  return {
-    wss,
-    clients,
-    close: () => {
-      clearInterval(heartbeat);
-      wss.close();
-    },
-  };
+  return { wss, clients };
 }
