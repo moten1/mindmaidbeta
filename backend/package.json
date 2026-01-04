@@ -1,12 +1,13 @@
 {
   "name": "mindmaid-backend",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "MindMaid AI backend server with caching, rate limiting, logging, and database support",
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js --keep-alive-timeout=30000",
-    "dev": "nodemon server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "postinstall": "cd ../frontend && npm install && npm run build"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
