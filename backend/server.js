@@ -13,6 +13,7 @@ import fs from "fs";
 import http from "http";
 import { fileURLToPath, pathToFileURL } from "url";
 
+// ⚠️ Kept for future use — NOT ACTIVE
 import { createEmotionStreamServer } from "./emotionProxy.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -34,7 +35,7 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
 
 // -----------------------------
-// 2. PRIMARY HEALTH CHECK (Must be above Static Files)
+// 2. HEALTH CHECK
 // -----------------------------
 app.get("/api/health", (req, res) => {
   res.status(200).json({
@@ -45,7 +46,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // -----------------------------
-// 3. ROUTE LOADER (API ROUTES)
+// 3. API ROUTES
 // -----------------------------
 const ROUTES = [
   { p: "/api/auth", f: "./routes/authRoutes.js" },
@@ -71,26 +72,21 @@ const loadRoutes = async () => {
   }
 };
 
-// Execute Load
 await loadRoutes();
 
 // -----------------------------
-// 4. STATIC FRONTEND SERVING
+// 4. STATIC FRONTEND
 // -----------------------------
-// Adjusting path to look for the 'build' folder correctly in Render's structure
 const buildPath = path.resolve(__dirname, "../frontend/build");
 
 if (fs.existsSync(buildPath)) {
   console.log("🎨 Frontend build detected. Serving static files...");
   app.use(express.static(buildPath));
 
-  // The Catch-all for React (Placed AFTER API routes)
   app.get("*", (req, res) => {
-    // If a request hits here and starts with /api, it means it missed all valid routes
     if (req.url.startsWith("/api")) {
       return res.status(404).json({ error: "API Endpoint Not Found" });
     }
-    // Otherwise, serve the React App
     res.sendFile(path.join(buildPath, "index.html"));
   });
 } else {
@@ -98,17 +94,17 @@ if (fs.existsSync(buildPath)) {
 }
 
 // -----------------------------
-// 5. SERVER INITIALIZATION
+// 5. SERVER INITIALIZATION (HTTP ONLY)
 // -----------------------------
 const server = http.createServer(app);
 
-try {
-  // Initialize WebSocket for Emotion Streaming
-  createEmotionStreamServer(server);
-  console.log("🔌 Emotion WebSocket Ready");
-} catch (e) {
-  console.error("❌ WS Error:", e.message);
-}
+/**
+ * 🚫 WebSockets intentionally disabled
+ * ℹ️ Using HTTP frames + polling (Render safe)
+ */
+// createEmotionStreamServer(server); ❌ DO NOT ENABLE ON RENDER
+
+console.log("ℹ️ Emotion Streaming Mode: HTTP + Polling");
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log("============================================");
