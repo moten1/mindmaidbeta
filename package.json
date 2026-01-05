@@ -1,6 +1,30 @@
 {
+  "name": "mindmaid",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "20.x"
+  },
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build",
+    "start": "node server.js"
+  },
   "dependencies": {
-    "react-scripts": "^5.0.1",
-    "run": "^1.5.0"
+    "@google/generative-ai": "^0.21.0",
+    "axios": "^1.7.9",
+    "compression": "^1.7.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "mongoose": "^8.8.4",
+    "morgan": "^1.10.0",
+    "multer": "1.4.5-lts.1",
+    "node-cache": "^5.1.2",
+    "openai": "^4.77.3",
+    "pg": "^8.10.0",
+    "winston": "^3.17.0",
+    "ws": "^8.18.0"
   }
 }
