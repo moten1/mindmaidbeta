@@ -1,9 +1,8 @@
-/**
- * ============================================
- * Mock Biometrics Generator
- * Phase 0.4.2 — Stub for real biometric integration
- * ============================================
- */
+// backend/emotionEngine/mockBiometrics.js
+// ============================================
+// 🩺 Mock Biometric Data (Phase 1.1)
+// Named export only — compatible with Node ESM
+// ============================================
 
 /**
  * Generate mock biometric data
@@ -11,12 +10,10 @@
  */
 export function generateBiometrics() {
   return {
-    heartRate: Math.floor(Math.random() * (120 - 60) + 60), // 60-120 bpm
-    respiratoryRate: Math.floor(Math.random() * (25 - 12) + 12), // 12-25 breaths/min
-    skinConductance: Math.random() * 10, // 0-10 microSiemens
-    bodyTemperature: Math.random() * (37.5 - 36.5) + 36.5, // 36.5-37.5°C
+    heartRate: Math.floor(Math.random() * (120 - 60) + 60),        // 60-120 bpm
+    respiratoryRate: Math.floor(Math.random() * (25 - 12) + 12),  // 12-25 breaths/min
+    skinConductance: parseFloat((Math.random() * 10).toFixed(2)), // 0-10 μS
+    bodyTemperature: parseFloat((Math.random() * (37.5 - 36.5) + 36.5).toFixed(2)), // 36.5-37.5°C
     timestamp: new Date().toISOString(),
   };
 }
-
-export default { generateBiometrics };

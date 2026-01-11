@@ -1,24 +1,37 @@
 // backend/emotionEngine/index.js
 // ============================================
-// 🧠 Emotion Engine Entry Point (Phase 0.4.2)
+// 🧠 Emotion Engine Entry Point (Phase 1.0)
 // Combines mock emotion + biometric stubs
+// Fully async, ready for AI integration
 // ============================================
 
 import { generateEmotion } from "./mockEmotion.js";
 import { generateBiometrics } from "./mockBiometrics.js";
 
 /**
- * Main analyzeEmotion function
- * @param {Object} input - { frame?: Buffer, ts?: number }
+ * Analyze emotion + biometrics
+ * @param {Object} input - optional input { frame?: Buffer, ts?: number }
+ * @returns {Promise<Object>} - { emotion, confidence, biometrics }
  */
 export async function analyzeEmotion(input = {}) {
-  // Currently ignores frame, but ready for Phase 0.5 AI processing
+  try {
+    // Mock emotion analysis
+    const emotionData = generateEmotion();
 
-  const emotionData = generateEmotion();
-  const biometrics = generateBiometrics();
+    // Mock biometrics
+    const biometrics = generateBiometrics();
 
-  return {
-    ...emotionData,
-    biometrics,
-  };
+    return {
+      ...emotionData,
+      biometrics,
+    };
+  } catch (err) {
+    console.error("❌ Emotion Engine failed:", err.message);
+    // Fallback
+    return {
+      emotion: "neutral",
+      confidence: 0.5,
+      biometrics: generateBiometrics(),
+    };
+  }
 }

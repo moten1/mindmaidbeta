@@ -1,32 +1,72 @@
 // backend/emotionProxy.js
 // ============================================
-// 🧠 Emotion WebSocket Proxy (Phase 0.7 FINAL)
-// Session-based emotion intelligence (in-memory)
-// Path-locked, Render-safe, observable
+// 🧠 Emotion + Biometric WebSocket Proxy
+// Phase 1.1 — Render-safe, browser-safe
 // ============================================
 
-import WebSocket from "ws";
+import { WebSocketServer } from "ws";
 import crypto from "crypto";
-import { analyzeEmotion } from "./emotionEngine/index.js";
+import { generateBiometrics } from "./emotionEngine/mockBiometrics.js";
 
+/* --------------------------------------------
+   Constants
+-------------------------------------------- */
 const EMOTION_WS_PATH = "/api/emotion/stream";
+const HEARTBEAT_INTERVAL_MS = 30000;
+const MAX_SESSION_EVENTS = 300;
 
+/* --------------------------------------------
+   Mock Emotion Engine (AI-ready stub)
+-------------------------------------------- */
+async function analyzeEmotion() {
+  const EMOTIONS = ["happy", "sad", "angry", "surprised", "neutral"];
+  return {
+    emotion: EMOTIONS[Math.floor(Math.random() * EMOTIONS.length)],
+    confidence: Math.random() * 0.5 + 0.5,
+  };
+}
+
+/* --------------------------------------------
+   Safe Wrapper
+-------------------------------------------- */
+async function safeAnalyzeEmotion() {
+  try {
+    return await analyzeEmotion();
+  } catch (err) {
+    console.error("❌ Emotion engine error:", err.message);
+    return { emotion: "neutral", confidence: 0 };
+  }
+}
+
+/* --------------------------------------------
+   Session Summary
+-------------------------------------------- */
+function summarizeSession(events) {
+  const counts = {};
+  for (const e of events) {
+    counts[e.emotion] = (counts[e.emotion] || 0) + 1;
+  }
+
+  return {
+    dominantEmotion:
+      Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "neutral",
+    totalEvents: events.length,
+  };
+}
+
+/* --------------------------------------------
+   WebSocket Server
+-------------------------------------------- */
 export function createEmotionStreamServer(server) {
-  const wss = new WebSocket.Server({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true });
   const clients = new Set();
 
-  /* --------------------------------------------
-     Upgrade Handler (PATH-LOCKED)
-  --------------------------------------------*/
+  /* ---------- Upgrade Handler (Render-safe) ---------- */
   server.on("upgrade", (req, socket, head) => {
     try {
-      if (req.headers.upgrade?.toLowerCase() !== "websocket") {
-        socket.destroy();
-        return;
-      }
+      const { pathname } = new URL(req.url, `http://${req.headers.host}`);
 
-      // 🔐 Lock WebSocket strictly to emotion stream
-      if (req.url !== EMOTION_WS_PATH) {
+      if (!pathname.startsWith(EMOTION_WS_PATH)) {
         socket.destroy();
         return;
       }
@@ -39,92 +79,65 @@ export function createEmotionStreamServer(server) {
     }
   });
 
-  /* --------------------------------------------
-     WebSocket Connection
-  --------------------------------------------*/
+  /* ---------- Connection ---------- */
   wss.on("connection", (ws) => {
     clients.add(ws);
     ws.isAlive = true;
 
-    // 🧠 Create emotion session
-    const sessionId = crypto.randomUUID();
     ws.session = {
-      id: sessionId,
+      id: crypto.randomUUID(),
       startedAt: Date.now(),
-      emotions: [],
+      events: [],
     };
 
-    console.log("🧠 Emotion session started:", sessionId);
-    console.log("🔌 Emotion WS connected | clients:", clients.size);
+    console.log("🧠 WS CONNECTED | Session:", ws.session.id);
 
-    ws.on("pong", () => {
-      ws.isAlive = true;
-    });
+    ws.on("pong", () => (ws.isAlive = true));
 
-    ws.on("message", async (msg) => {
+    ws.on("message", async () => {
       try {
-        // Accept raw binary (future camera frames) or control JSON
-        const input =
-          msg instanceof Buffer
-            ? { frame: msg, ts: Date.now() }
-            : {};
+        const emotion = await safeAnalyzeEmotion();
+        const biometrics = generateBiometrics();
 
-        // 🚀 Emotion engine
-        const result = await analyzeEmotion(input);
-
-        // 📥 Store rolling session memory
-        ws.session.emotions.push({
-          emotion: result.emotion,
-          confidence: result.confidence ?? 1,
+        const payload = {
+          type: "emotion_biometrics",
+          sessionId: ws.session.id,
+          ...emotion,
+          biometrics,
           ts: Date.now(),
-        });
+        };
 
-        // Limit memory footprint
-        if (ws.session.emotions.length > 300) {
-          ws.session.emotions.shift();
+        ws.session.events.push(payload);
+        if (ws.session.events.length > MAX_SESSION_EVENTS) {
+          ws.session.events.shift();
         }
 
-        // 📤 Emit to client
-        ws.send(
-          JSON.stringify({
-            type: "emotion",
-            sessionId: ws.session.id,
-            ...result,
-            ts: Date.now(),
-          })
-        );
-      } catch (e) {
-        console.error("❌ WS message error:", e.message);
+        if (ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify(payload));
+        }
+      } catch (err) {
+        console.error("❌ WS message error:", err.message);
       }
     });
 
     ws.on("close", () => {
       clients.delete(ws);
 
-      if (ws.session) {
-        const summary = summarizeSession(ws.session.emotions);
-
-        console.log("📊 Emotion Session Summary", {
-          sessionId: ws.session.id,
-          durationSec: Math.floor(
-            (Date.now() - ws.session.startedAt) / 1000
-          ),
-          ...summary,
-        });
-      }
-
-      console.log("❌ Emotion WS disconnected | clients:", clients.size);
+      const summary = summarizeSession(ws.session.events);
+      console.log("📊 Session Summary:", {
+        sessionId: ws.session.id,
+        durationSec: Math.floor((Date.now() - ws.session.startedAt) / 1000),
+        ...summary,
+      });
     });
 
     ws.on("error", (err) => {
       clients.delete(ws);
-      console.warn("⚠️ Emotion WS error:", err.message);
+      console.warn("⚠️ WS error:", err.message);
     });
   });
 
-  /* --------------------------------------------
-     Heartbeat (Liveness)
-  --------------------------------------------*/
+  /* ---------- Heartbeat ---------- */
   const heartbeat = setInterval(() => {
     for (const ws of clients) {
       if (!ws.isAlive) {
@@ -135,39 +148,13 @@ export function createEmotionStreamServer(server) {
       ws.isAlive = false;
       ws.ping();
     }
-  }, 30000);
+  }, HEARTBEAT_INTERVAL_MS);
 
-  console.log("🧠 Emotion WebSocket proxy initialized @", EMOTION_WS_PATH);
-
-  /* --------------------------------------------
-     Return reference (observability & cleanup)
-  --------------------------------------------*/
   return {
     wss,
-    clients,
     close: () => {
       clearInterval(heartbeat);
       wss.close();
     },
-  };
-}
-
-/* --------------------------------------------
-   Session Summary Helper (Phase 0.7)
---------------------------------------------*/
-function summarizeSession(events) {
-  const counts = {};
-
-  for (const e of events) {
-    counts[e.emotion] = (counts[e.emotion] || 0) + 1;
-  }
-
-  const dominantEmotion =
-    Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ??
-    "neutral";
-
-  return {
-    dominantEmotion,
-    totalEvents: events.length,
   };
 }

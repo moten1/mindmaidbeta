@@ -1,118 +1,102 @@
 // backend/server.js
 // ============================================
-// 🌟 MindMaid Backend Server (Production Optimized)
+// MindMaid Backend — Render Production Safe
+// HTTP only (Render terminates SSL)
+// Includes WebSocket (Emotion + Biometrics Stream)
 // ============================================
 
 import express from "express";
-import cors from "cors";
-import morgan from "morgan";
-import compression from "compression";
+import mongoose from "mongoose";
 import dotenv from "dotenv";
-import path from "path";
-import fs from "fs";
+import cors from "cors";
 import http from "http";
-import { fileURLToPath, pathToFileURL } from "url";
-
-// ⚠️ Kept for future use — NOT ACTIVE
 import { createEmotionStreamServer } from "./emotionProxy.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
 const app = express();
-const PORT = Number(process.env.PORT || 5000);
-const NODE_ENV = process.env.NODE_ENV || "production";
 
-// -----------------------------
-// 1. GLOBAL MIDDLEWARE
-// -----------------------------
-app.use(cors({ origin: "*", credentials: false }));
-app.use(compression());
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
+// ------------------------
+// Config
+// ------------------------
+const PORT = process.env.PORT || 5000;
+const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
 
-// -----------------------------
-// 2. HEALTH CHECK
-// -----------------------------
-app.get("/api/health", (req, res) => {
-  res.status(200).json({
-    ok: true,
-    status: "online",
-    serverTime: new Date().toISOString()
-  });
-});
-
-// -----------------------------
-// 3. API ROUTES
-// -----------------------------
-const ROUTES = [
-  { p: "/api/auth", f: "./routes/authRoutes.js" },
-  { p: "/api/user", f: "./routes/userRoutes.js" },
-  { p: "/api/feedback", f: "./routes/feedbackRoutes.js" },
-  { p: "/api/sessions", f: "./routes/sessionRoutes.js" },
-  { p: "/api/ai", f: "./routes/aiRoutes.js" },
-  { p: "/api/emotion", f: "./routes/emotionRoutes.js" },
-];
-
-const loadRoutes = async () => {
-  for (const r of ROUTES) {
-    const fullPath = path.join(__dirname, r.f);
-    if (fs.existsSync(fullPath)) {
-      try {
-        const mod = await import(pathToFileURL(fullPath).href);
-        app.use(r.p, mod.default || mod);
-        console.log(`📌 Route Active: ${r.p}`);
-      } catch (err) {
-        console.error(`❌ Route Failed: ${r.p}`, err.message);
-      }
-    }
-  }
-};
-
-await loadRoutes();
-
-// -----------------------------
-// 4. STATIC FRONTEND
-// -----------------------------
-const buildPath = path.resolve(__dirname, "../frontend/build");
-
-if (fs.existsSync(buildPath)) {
-  console.log("🎨 Frontend build detected. Serving static files...");
-  app.use(express.static(buildPath));
-
-  app.get("*", (req, res) => {
-    if (req.url.startsWith("/api")) {
-      return res.status(404).json({ error: "API Endpoint Not Found" });
-    }
-    res.sendFile(path.join(buildPath, "index.html"));
-  });
-} else {
-  console.warn("⚠️ No frontend build found at:", buildPath);
+if (!MONGO_URI) {
+  console.error(
+    "❌ MongoDB URI not defined. Set MONGO_URI or MONGODB_URI in your environment variables."
+  );
+  process.exit(1);
 }
 
-// -----------------------------
-// 5. SERVER INITIALIZATION (HTTP ONLY)
-// -----------------------------
-const server = http.createServer(app);
+// ------------------------
+// Middleware
+// ------------------------
+app.use(cors());
+app.use(express.json());
+app.set("trust proxy", true);
 
-/**
- * 🚫 WebSockets intentionally disabled
- * ℹ️ Using HTTP frames + polling (Render safe)
- */
-// createEmotionStreamServer(server); ❌ DO NOT ENABLE ON RENDER
-
-console.log("ℹ️ Emotion Streaming Mode: HTTP + Polling");
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("============================================");
-  console.log(`🚀 SERVER RUNNING ON PORT: ${PORT}`);
-  console.log(`🌍 MODE: ${NODE_ENV}`);
-  console.log("============================================");
+// ------------------------
+// Health Check Route
+// ------------------------
+app.get("/", (req, res) => {
+  res.json({ status: "MindMaid backend running 🚀" });
 });
 
+// ------------------------
+// MongoDB Connection
+// ------------------------
+mongoose
+  .connect(MONGO_URI)
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch((err) => {
+    console.error("❌ MongoDB connection error:", err.message);
+    process.exit(1);
+  });
+
+// ------------------------
+// HTTP Server (Render only)
+// ------------------------
+const server = http.createServer(app);
+
+// ------------------------
+// WebSocket Server (Emotion + Biometrics)
+// ------------------------
+const { wss: emotionWSS, clients: wsClients, close: closeEmotionWS } =
+  createEmotionStreamServer(server);
+
+// ------------------------
+// Start Server
+// ------------------------
+server.listen(PORT, () => {
+  console.log(`✅ Server listening on http://localhost:${PORT}`);
+});
+
+// ------------------------
 // Graceful Shutdown
-process.on("SIGTERM", () => server.close());
-process.on("SIGINT", () => server.close());
+// ------------------------
+async function shutdown() {
+  console.log("\n⚡ Shutting down MindMaid backend...");
+  try {
+    closeEmotionWS?.();
+    await mongoose.disconnect();
+    server.close(() => {
+      console.log("✅ Shutdown complete");
+      process.exit(0);
+    });
+  } catch (err) {
+    console.error("❌ Error during shutdown:", err);
+    process.exit(1);
+  }
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+  shutdown();
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("❌ Unhandled Rejection:", reason);
+  shutdown();
+});
