@@ -10,16 +10,16 @@ ENV NODE_ENV=production
 # -------------------------
 FROM base AS backend-deps
 COPY backend/package*.json ./backend/
-RUN cd backend && npm ci --legacy-peer-deps --only=production
+RUN cd backend && npm ci --legacy-peer-deps --only=production --silent
 
 # -------------------------
 # Frontend dependencies + build
 # -------------------------
 FROM base AS frontend-deps
 COPY frontend/package*.json ./frontend/
-RUN cd frontend && npm ci --legacy-peer-deps
+RUN cd frontend && npm ci --legacy-peer-deps --silent
 COPY frontend ./frontend
-RUN cd frontend && npm run build
+RUN cd frontend && npm run build --silent
 
 # -------------------------
 # Final image
