@@ -1,8 +1,12 @@
 const WebSocket = require("ws");
+import dotenv from "dotenv";
+dotenv.config(); // Load AI keys from .env
+
+// Example: using OpenAI API via fetch
+import fetch from "node-fetch";
 
 class WebSocketServer {
   constructor(server, options = {}) {
-    // Standardizing the path to match your frontend config
     this.wss = new WebSocket.Server({ server, ...options });
     this.clients = new Set();
 
@@ -15,20 +19,18 @@ class WebSocketServer {
       this.clients.add(ws);
       ws.isAlive = true;
 
-      // Setup Heartbeat to prevent Render timeout
+      // Heartbeat to prevent idle timeouts on Render
       ws.on("pong", () => { ws.isAlive = true; });
 
       ws.on("message", async (raw) => {
         try {
-          // 1. Handle Binary Image Frames
+          // 1️⃣ Handle Binary Image Frames
           if (Buffer.isBuffer(raw) || raw instanceof ArrayBuffer) {
             const buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
-            
-            // Log frame receipt (useful for debugging performance)
-            // console.log(`📸 Received frame: ${buffer.length} bytes`);
 
+            // Process frame through real-time AI
             const result = await this.processFrame(buffer);
-            
+
             if (result && ws.readyState === WebSocket.OPEN) {
               this.sendToClient(ws, {
                 type: "emotion_update",
@@ -40,13 +42,11 @@ class WebSocketServer {
             return;
           }
 
-          // 2. Handle JSON messages (Location, Config, etc.)
+          // 2️⃣ Handle JSON messages (Location, Config, etc.)
           let message;
           try {
             message = JSON.parse(raw.toString());
-          } catch (e) {
-            return; // Ignore non-JSON strings
-          }
+          } catch (e) { return; }
 
           if (message.type === "location") {
             ws.userLocation = { lat: message.lat, lng: message.lng };
@@ -69,43 +69,65 @@ class WebSocketServer {
       });
     });
 
-    // Start Heartbeat interval (every 30 seconds)
     this.startHeartbeat();
   }
 
-  /**
-   * Prevents Render from closing "idle" connections
-   */
+  // Heartbeat to prevent idle disconnect
   startHeartbeat() {
     this.heartbeatInterval = setInterval(() => {
       this.wss.clients.forEach((ws) => {
-        if (ws.isAlive === false) return ws.terminate();
+        if (!ws.isAlive) return ws.terminate();
         ws.isAlive = false;
         ws.ping();
       });
     }, 30000);
   }
 
+  // -----------------------------
+  // Real-time AI processing
+  // -----------------------------
   async processFrame(frame) {
-    // In production, you'd pass 'frame' to your AI model here.
-    const emotions = ["happy", "calm", "focused", "energetic", "thoughtful"];
-    const emotion = emotions[Math.floor(Math.random() * emotions.length)];
+    try {
+      // Convert frame to base64 (adjust if your AI expects another format)
+      const base64Frame = Buffer.isBuffer(frame) ? frame.toString("base64") : Buffer.from(frame).toString("base64");
 
-    return { 
-      emotion, 
-      recommendations: {
-        music: emotion === "happy" ? "Upbeat Jazz" : "Lofi Chill",
-        activity: "Take a 5-minute stretch"
-      } 
-    };
+      // Call your AI service
+      const response = await fetch("https://api.example.com/emotion", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.AI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ image: base64Frame })
+      });
+
+      const data = await response.json();
+
+      return {
+        emotion: data.emotion,
+        recommendations: data.recommendations || {
+          music: data.emotion === "happy" ? "Upbeat Jazz" : "Lofi Chill",
+          activity: "Take a 5-minute stretch"
+        }
+      };
+
+    } catch (err) {
+      console.error("❌ AI Processing Error:", err);
+      return {
+        emotion: "neutral",
+        recommendations: { music: "Calm Ambient", activity: "Breathe deeply" }
+      };
+    }
   }
 
+  // Send data to single client
   sendToClient(client, data) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(JSON.stringify(data));
     }
   }
 
+  // Graceful shutdown
   close() {
     clearInterval(this.heartbeatInterval);
     this.wss.close();
