@@ -1,8 +1,6 @@
 // backend/server.js
 // ============================================
-// MindMaid Backend — Render Production Safe
-// HTTP only (Render terminates SSL)
-// Includes WebSocket (Emotion + Biometrics Stream)
+// MindMaid Backend — Render Pre-Flight Ready
 // ============================================
 
 import express from "express";
@@ -10,6 +8,8 @@ import mongoose from "mongoose";
 import dotenv from "dotenv";
 import cors from "cors";
 import http from "http";
+import path from "path";
+import { fileURLToPath } from "url";
 import { createEmotionStreamServer } from "./emotionProxy.js";
 
 dotenv.config();
@@ -32,15 +32,15 @@ if (!MONGO_URI) {
 // ------------------------
 // Middleware
 // ------------------------
-app.use(cors());
+app.use(cors()); // For pre-flight testing we allow all origins
 app.use(express.json());
 app.set("trust proxy", true);
 
 // ------------------------
 // Health Check Route
 // ------------------------
-app.get("/", (req, res) => {
-  res.json({ status: "MindMaid backend running 🚀" });
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok", time: new Date().toISOString() });
 });
 
 // ------------------------
@@ -53,6 +53,17 @@ mongoose
     console.error("❌ MongoDB connection error:", err.message);
     process.exit(1);
   });
+
+// ------------------------
+// Serve React Frontend
+// ------------------------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+app.use(express.static(path.join(__dirname, "../frontend/build")));
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../frontend/build", "index.html"));
+});
 
 // ------------------------
 // HTTP Server (Render only)
@@ -69,7 +80,7 @@ const { wss: emotionWSS, clients: wsClients, close: closeEmotionWS } =
 // Start Server
 // ------------------------
 server.listen(PORT, () => {
-  console.log(`✅ Server listening on http://localhost:${PORT}`);
+  console.log(`✅ Server listening on port ${PORT}`);
 });
 
 // ------------------------

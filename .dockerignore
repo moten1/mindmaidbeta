@@ -1,5 +1,19 @@
+# dependencies
 node_modules
+frontend/node_modules
+backend/node_modules
+
+# frontend build output (built inside Docker)
 frontend/build
+
+# runtime / uploads
 backend/uploads
+
+# env & git
 .env
 .git
+.gitignore
+
+# logs
+npm-debug.log
+yarn-error.log
