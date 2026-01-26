@@ -1,6 +1,6 @@
 // backend/server.js
 // ============================================
-// MindMaid Backend — Render Pre-Flight & Real-Time AI Ready
+// MindMaid Backend — Render Safe + Real-Time AI
 // ============================================
 
 import express from "express";
@@ -10,7 +10,8 @@ import cors from "cors";
 import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
-import WebSocketServer from "./emotionProxy.js"; // your revised WebSocketServer
+
+import WebSocketServer from "./emotionProxy.js"; // upgraded WS server
 
 dotenv.config();
 
@@ -23,96 +24,117 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
 
 if (!MONGO_URI) {
-  console.error(
-    "❌ MongoDB URI not defined. Set MONGO_URI or MONGODB_URI in your environment variables."
-  );
+  console.error("❌ MongoDB URI missing");
   process.exit(1);
 }
 
 // ------------------------
 // Middleware
 // ------------------------
-app.use(cors()); // Pre-flight testing allows all origins
-app.use(express.json());
 app.set("trust proxy", true);
+app.use(cors());
+app.use(express.json({ limit: "2mb" }));
 
 // ------------------------
-// Health Check
+// Health Check (Render)
 // ------------------------
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", time: new Date().toISOString() });
+app.get("/health", (_, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
 });
 
 // ------------------------
 // MongoDB Connection
 // ------------------------
-mongoose
-  .connect(MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message);
+(async () => {
+  try {
+    await mongoose.connect(MONGO_URI);
+    console.log("✅ MongoDB connected");
+  } catch (err) {
+    console.error("❌ MongoDB connection failed:", err.message);
     process.exit(1);
-  });
+  }
+})();
 
 // ------------------------
-// Serve React Frontend
+// Static Frontend (React)
 // ------------------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-app.use(express.static(path.join(__dirname, "../frontend/build")));
+const frontendPath = path.join(__dirname, "../frontend/build");
+app.use(express.static(frontendPath));
 
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "../frontend/build", "index.html"));
+app.get("*", (_, res) => {
+  res.sendFile(path.join(frontendPath, "index.html"));
 });
 
 // ------------------------
-// HTTP Server (Render Only)
+// HTTP Server (required by Render)
 // ------------------------
 const server = http.createServer(app);
 
 // ------------------------
-// WebSocket Server (Real-Time AI)
+// WebSocket Server (AI / Biometrics)
 // ------------------------
 const wsServer = new WebSocketServer(server, {
-  path: "/ws", // optional custom path
+  path: "/ws" // stable WS endpoint
 });
-const emotionWSS = wsServer.wss;
-const wsClients = wsServer.clients;
 
 // ------------------------
 // Start Server
 // ------------------------
 server.listen(PORT, () => {
-  console.log(`✅ Server listening on port ${PORT}`);
+  console.log(`🚀 MindMaid backend live on port ${PORT}`);
 });
 
 // ------------------------
 // Graceful Shutdown
 // ------------------------
-async function shutdown() {
-  console.log("\n⚡ Shutting down MindMaid backend...");
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  console.log(`\n⚡ Shutdown initiated (${signal})`);
+
   try {
-    wsServer.close(); // close all WS connections & heartbeat
+    wsServer.close(); // closes sockets + heartbeat + worker
     await mongoose.disconnect();
+
     server.close(() => {
-      console.log("✅ Shutdown complete");
+      console.log("✅ HTTP server closed");
       process.exit(0);
     });
+
+    // Safety exit if something hangs
+    setTimeout(() => {
+      console.warn("⚠️ Force exit after timeout");
+      process.exit(1);
+    }, 10_000);
+
   } catch (err) {
-    console.error("❌ Error during shutdown:", err);
+    console.error("❌ Shutdown error:", err);
     process.exit(1);
   }
 }
 
-// Catch signals & errors
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
-process.on("uncaughtException", (err) => {
+// ------------------------
+// Process Signals
+// ------------------------
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+process.on("uncaughtException", err => {
   console.error("❌ Uncaught Exception:", err);
-  shutdown();
+  shutdown("uncaughtException");
 });
-process.on("unhandledRejection", (reason) => {
+
+process.on("unhandledRejection", reason => {
   console.error("❌ Unhandled Rejection:", reason);
-  shutdown();
+  shutdown("unhandledRejection");
 });
