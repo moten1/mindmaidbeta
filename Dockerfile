@@ -31,8 +31,14 @@ WORKDIR /usr/src/app
 COPY --from=backend-deps /usr/src/app/backend ./backend
 COPY --from=frontend-deps /usr/src/app/frontend/build ./frontend/build
 
+# Set working directory to backend
 WORKDIR /usr/src/app/backend
+
+# Expose port (Render will provide PORT env)
 EXPOSE 3000
 
-# Start backend server using Render PORT
+# Use Render PORT if available
+ENV PORT=3000
+
+# Start backend server
 CMD ["node", "server.js"]
