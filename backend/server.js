@@ -11,8 +11,8 @@ import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// ✅ Use factory function for WS
-import { createEmotionStreamServer } from "./emotionProxy.js";
+// ✅ Use the WebSocketServer class directly
+import { WebSocketServer } from "./emotionProxy.js";
 
 dotenv.config();
 
@@ -42,8 +42,8 @@ app.use(express.json({ limit: "2mb" }));
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendPath = path.join(__dirname, "../frontend/build");
-app.use(express.static(frontendPath));
 
+app.use(express.static(frontendPath));
 app.get("*", (_, res) => {
   res.sendFile(path.join(frontendPath, "index.html"));
 });
@@ -56,7 +56,7 @@ const server = http.createServer(app);
 // ------------------------
 // WebSocket Server (AI / Biometrics)
 // ------------------------
-const { wss: wsServer, clients } = createEmotionStreamServer(server);
+const wsServer = new WebSocketServer(server);
 
 // ------------------------
 // Health Check
@@ -66,7 +66,7 @@ app.get("/health", (_, res) => {
     status: "ok",
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
-    wsClients: clients.size, // active WS connections
+    wsClients: wsServer.clients.size, // active WS connections
   });
 });
 
@@ -102,22 +102,22 @@ async function shutdown(signal) {
   console.log(`\n⚡ Shutdown initiated (${signal})`);
 
   try {
-    wsServer.close(); // closes all WS connections
+    wsServer.close(); // closes WS connections
     await mongoose.disconnect();
 
     server.close(() => {
       console.log("✅ HTTP server closed");
-      process.exitCode = 0;
+      process.exit(0);
     });
 
-    // Safety exit if shutdown hangs
+    // Force exit safety
     setTimeout(() => {
       console.warn("⚠️ Force exit after timeout");
-      process.exitCode = 1;
+      process.exit(1);
     }, 10_000);
   } catch (err) {
     console.error("❌ Shutdown error:", err);
-    process.exitCode = 1;
+    process.exit(1);
   }
 }
 
