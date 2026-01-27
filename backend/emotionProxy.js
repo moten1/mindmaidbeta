@@ -1,132 +1,183 @@
 // backend/emotionProxy.js
-// ============================================
-// 🧠 Emotion WebSocket Proxy (Render Production Ready)
-// Session-aware, path-locked, observable, heartbeat-maintained
-// ============================================
+// ======================================================
+// 🧠 Emotion WebSocket Server
+// Render-safe | ESM-native | Session-aware | Heartbeat-guarded
+// ======================================================
 
-import { WebSocketServer } from "ws";
+import { WebSocketServer as WSS } from "ws";
 import crypto from "crypto";
 import { analyzeEmotion } from "./emotionEngine/index.js";
 import {
   recordEmotion,
   summarizeSession,
-  closeSession,
+  closeSession
 } from "./emotionEngine/emotionSessionStore.js";
 
-const EMOTION_WS_PATH = "/api/emotion/stream";
-const HEARTBEAT_INTERVAL_MS = 30000; // 30 seconds
+const WS_PATH = "/api/emotion/stream";
+const HEARTBEAT_INTERVAL = 30_000; // 30s
 
-export function createEmotionStreamServer(server) {
-  // WebSocket server (manual upgrade)
-  const wss = new WebSocketServer({ noServer: true });
-  const clients = new Set();
+export default class WebSocketServer {
+  constructor(httpServer, options = {}) {
+    this.httpServer = httpServer;
+    this.path = options.path || WS_PATH;
 
-  /* --------------------------------------------
-      Upgrade Handler: Only allow EMOTION_WS_PATH
-  --------------------------------------------*/
-  server.on("upgrade", (req, socket, head) => {
-    try {
-      const { pathname } = new URL(req.url, `http://${req.headers.host}`);
-      console.log(`🔌 WS Upgrade request: ${pathname}`);
+    this.wss = null;
+    this.heartbeatTimer = null;
+    this.clients = new Set();
 
-      if (pathname !== EMOTION_WS_PATH) {
-        console.warn(`⚠️ Rejecting WS connection: Wrong path (${pathname})`);
-        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+    this._init();
+  }
+
+  // --------------------------------------------------
+  // Initialization
+  // --------------------------------------------------
+  _init() {
+    this.wss = new WSS({ noServer: true });
+
+    this._attachUpgradeHandler();
+    this._attachConnectionHandler();
+    this._startHeartbeat();
+
+    console.log(`🧠 Emotion WebSocket ready on ${this.path}`);
+  }
+
+  // --------------------------------------------------
+  // HTTP → WS Upgrade (path-locked)
+  // --------------------------------------------------
+  _attachUpgradeHandler() {
+    this.httpServer.on("upgrade", (req, socket, head) => {
+      try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+
+        if (url.pathname !== this.path) {
+          socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+
+        this.wss.handleUpgrade(req, socket, head, ws => {
+          this.wss.emit("connection", ws, req);
+        });
+      } catch (err) {
+        console.error("❌ WS upgrade failed:", err.message);
         socket.destroy();
-        return;
       }
+    });
+  }
 
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, req);
+  // --------------------------------------------------
+  // Connection Lifecycle
+  // --------------------------------------------------
+  _attachConnectionHandler() {
+    this.wss.on("connection", ws => {
+      ws.sessionId = crypto.randomUUID();
+      ws.isAlive = true;
+
+      this.clients.add(ws);
+
+      console.log(
+        `✅ WS connected | session=${ws.sessionId} | clients=${this.clients.size}`
+      );
+
+      ws.on("pong", () => {
+        ws.isAlive = true;
       });
-    } catch (err) {
-      console.error("❌ WS Upgrade Error:", err.message);
-      socket.destroy();
-    }
-  });
 
-  /* --------------------------------------------
-      Connection Handler
-  --------------------------------------------*/
-  wss.on("connection", (ws) => {
-    clients.add(ws);
-    ws.isAlive = true;
-    ws.sessionId = crypto.randomUUID();
+      ws.on("message", async message => {
+        await this._handleMessage(ws, message);
+      });
+
+      ws.on("close", (code, reason) => {
+        this._handleDisconnect(ws, code, reason);
+      });
+
+      ws.on("error", err => {
+        console.warn(`⚠️ WS error [${ws.sessionId}]:`, err.message);
+        this._cleanupClient(ws);
+      });
+    });
+  }
+
+  // --------------------------------------------------
+  // Message Processing
+  // --------------------------------------------------
+  async _handleMessage(ws, message) {
+    try {
+      const input = {
+        frame: message,
+        ts: Date.now()
+      };
+
+      const result = await analyzeEmotion(input);
+      recordEmotion(ws.sessionId, result);
+
+      if (ws.readyState === ws.OPEN) {
+        ws.send(
+          JSON.stringify({
+            type: "emotion",
+            sessionId: ws.sessionId,
+            ts: Date.now(),
+            ...result
+          })
+        );
+      }
+    } catch (err) {
+      console.error(
+        `❌ Emotion processing failed [${ws.sessionId}]:`,
+        err.message
+      );
+    }
+  }
+
+  // --------------------------------------------------
+  // Disconnect + Session Finalization
+  // --------------------------------------------------
+  _handleDisconnect(ws, code, reason) {
+    const summary = summarizeSession(ws.sessionId);
+    if (summary) {
+      console.log(`🧠 Session summary [${ws.sessionId}]:`, summary);
+    }
+
+    closeSession(ws.sessionId);
+    this._cleanupClient(ws);
 
     console.log(
-      `✅ Emotion WS Connected | Session: ${ws.sessionId} | Clients: ${clients.size}`
+      `❌ WS disconnected | session=${ws.sessionId} | code=${code}`
     );
+  }
 
-    // Heartbeat response
-    ws.on("pong", () => {
-      ws.isAlive = true;
-    });
+  _cleanupClient(ws) {
+    this.clients.delete(ws);
+  }
 
-    // Handle incoming frames or messages
-    ws.on("message", async (msg) => {
-      try {
-        const input = { frame: msg, ts: Date.now() };
-        const result = await analyzeEmotion(input);
-
-        // Save session data for analytics or history
-        recordEmotion(ws.sessionId, result);
-
-        // Respond back to client
-        if (ws.readyState === 1) {
-          ws.send(
-            JSON.stringify({
-              type: "emotion",
-              sessionId: ws.sessionId,
-              ...result,
-              ts: Date.now(),
-            })
-          );
+  // --------------------------------------------------
+  // Heartbeat (kills dead connections)
+  // --------------------------------------------------
+  _startHeartbeat() {
+    this.heartbeatTimer = setInterval(() => {
+      this.wss.clients.forEach(ws => {
+        if (!ws.isAlive) {
+          console.log(`💀 Terminating stale session ${ws.sessionId}`);
+          ws.terminate();
+          this.clients.delete(ws);
+          return;
         }
-      } catch (err) {
-        console.error(`❌ WS Processing Error [${ws.sessionId}]:`, err.message);
-      }
-    });
 
-    // Handle disconnection
-    ws.on("close", (code, reason) => {
-      const summary = summarizeSession(ws.sessionId);
-      if (summary) {
-        console.log(`🧠 Session Summary [${ws.sessionId}]:`, summary);
-      }
+        ws.isAlive = false;
+        ws.ping();
+      });
+    }, HEARTBEAT_INTERVAL);
+  }
 
-      closeSession(ws.sessionId);
-      clients.delete(ws);
-      console.log(
-        `❌ WS Disconnected | Session: ${ws.sessionId} | Code: ${code} | Remaining: ${clients.size}`
-      );
-    });
+  // --------------------------------------------------
+  // Graceful Shutdown
+  // --------------------------------------------------
+  close() {
+    console.log("🧹 Shutting down WebSocket server");
 
-    // Handle socket errors
-    ws.on("error", (err) => {
-      console.warn(`⚠️ WS Error [${ws.sessionId}]:`, err.message);
-      clients.delete(ws);
-    });
-  });
+    clearInterval(this.heartbeatTimer);
 
-  /* --------------------------------------------
-      Heartbeat (detects dead connections)
-  --------------------------------------------*/
-  const heartbeat = setInterval(() => {
-    wss.clients.forEach((ws) => {
-      if (!ws.isAlive) {
-        console.log(`💀 Terminating inactive session: ${ws.sessionId}`);
-        ws.terminate();
-        clients.delete(ws);
-        return;
-      }
-      ws.isAlive = false;
-      ws.ping();
-    });
-  }, HEARTBEAT_INTERVAL_MS);
-
-  // Cleanup on server close
-  wss.on("close", () => clearInterval(heartbeat));
-
-  console.log(`🧠 Emotion WebSocket proxy initialized at ${EMOTION_WS_PATH}`);
-  return { wss, clients, close: () => wss.close() };
+    this.wss.clients.forEach(ws => ws.close());
+    this.wss.close();
+  }
 }
