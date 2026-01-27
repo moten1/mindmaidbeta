@@ -1,44 +1,30 @@
 # ==============================
 # Base image
 # ==============================
-FROM node:20 AS base
-WORKDIR /usr/src/app
-ENV NODE_ENV=production
+FROM node:20-alpine
+
+# App root
+WORKDIR /app
 
 # ==============================
-# Backend dependencies
+# Install backend dependencies
 # ==============================
-FROM base AS backend-deps
 COPY backend/package*.json ./backend/
-RUN cd backend && npm ci --legacy-peer-deps --only=production --silent
+RUN cd backend && npm ci --only=production
 
 # ==============================
-# Frontend dependencies + build
+# Copy backend source
 # ==============================
-FROM base AS frontend-deps
-COPY frontend/package*.json ./frontend/
-RUN cd frontend && npm ci --legacy-peer-deps --silent
-COPY frontend ./frontend
-RUN cd frontend && npm run build --silent
+COPY backend ./backend
 
 # ==============================
-# Final image
+# Run backend
 # ==============================
-FROM node:20
-WORKDIR /usr/src/app
+WORKDIR /app/backend
 
-# Copy backend with node_modules
-COPY --from=backend-deps /usr/src/app/backend ./backend
-
-# Copy built frontend
-COPY --from=frontend-deps /usr/src/app/frontend/build ./frontend/build
-
-# Set working directory to backend
-WORKDIR /usr/src/app/backend
-
-# Expose port assigned by Render
-EXPOSE 3000
+ENV NODE_ENV=production
 ENV PORT=3000
 
-# Start backend server
+EXPOSE 3000
+
 CMD ["node", "server.js"]
