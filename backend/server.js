@@ -11,7 +11,8 @@ import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import WebSocketServer from "./emotionProxy.js"; // upgraded WS server
+// ✅ FIXED: named export (NOT default)
+import { WebSocketServer } from "./emotionProxy.js";
 
 dotenv.config();
 
@@ -20,7 +21,7 @@ const app = express();
 // ------------------------
 // Config
 // ------------------------
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
 
 if (!MONGO_URI) {
@@ -73,7 +74,7 @@ app.get("*", (_, res) => {
 });
 
 // ------------------------
-// HTTP Server (required by Render)
+// HTTP Server (Render-compatible)
 // ------------------------
 const server = http.createServer(app);
 
@@ -81,7 +82,7 @@ const server = http.createServer(app);
 // WebSocket Server (AI / Biometrics)
 // ------------------------
 const wsServer = new WebSocketServer(server, {
-  path: "/ws" // stable WS endpoint
+  path: "/ws"
 });
 
 // ------------------------
@@ -103,7 +104,7 @@ async function shutdown(signal) {
   console.log(`\n⚡ Shutdown initiated (${signal})`);
 
   try {
-    wsServer.close(); // closes sockets + heartbeat + worker
+    wsServer.close();
     await mongoose.disconnect();
 
     server.close(() => {
@@ -111,7 +112,6 @@ async function shutdown(signal) {
       process.exit(0);
     });
 
-    // Safety exit if something hangs
     setTimeout(() => {
       console.warn("⚠️ Force exit after timeout");
       process.exit(1);
