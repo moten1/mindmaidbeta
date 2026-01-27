@@ -11,8 +11,8 @@ import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// ✅ FIXED: named export (NOT default)
-import { WebSocketServer } from "./emotionProxy.js";
+// ✅ Use factory function for WS
+import { createEmotionStreamServer } from "./emotionProxy.js";
 
 dotenv.config();
 
@@ -37,35 +37,10 @@ app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
 // ------------------------
-// Health Check (Render)
-// ------------------------
-app.get("/health", (_, res) => {
-  res.status(200).json({
-    status: "ok",
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ------------------------
-// MongoDB Connection
-// ------------------------
-(async () => {
-  try {
-    await mongoose.connect(MONGO_URI);
-    console.log("✅ MongoDB connected");
-  } catch (err) {
-    console.error("❌ MongoDB connection failed:", err.message);
-    process.exit(1);
-  }
-})();
-
-// ------------------------
 // Static Frontend (React)
 // ------------------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 const frontendPath = path.join(__dirname, "../frontend/build");
 app.use(express.static(frontendPath));
 
@@ -81,9 +56,32 @@ const server = http.createServer(app);
 // ------------------------
 // WebSocket Server (AI / Biometrics)
 // ------------------------
-const wsServer = new WebSocketServer(server, {
-  path: "/ws"
+const { wss: wsServer, clients } = createEmotionStreamServer(server);
+
+// ------------------------
+// Health Check
+// ------------------------
+app.get("/health", (_, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    wsClients: clients.size, // active WS connections
+  });
 });
+
+// ------------------------
+// MongoDB Connection
+// ------------------------
+(async () => {
+  try {
+    await mongoose.connect(MONGO_URI);
+    console.log("✅ MongoDB connected");
+  } catch (err) {
+    console.error("❌ MongoDB connection failed:", err.message);
+    process.exit(1);
+  }
+})();
 
 // ------------------------
 // Start Server
@@ -104,22 +102,22 @@ async function shutdown(signal) {
   console.log(`\n⚡ Shutdown initiated (${signal})`);
 
   try {
-    wsServer.close();
+    wsServer.close(); // closes all WS connections
     await mongoose.disconnect();
 
     server.close(() => {
       console.log("✅ HTTP server closed");
-      process.exit(0);
+      process.exitCode = 0;
     });
 
+    // Safety exit if shutdown hangs
     setTimeout(() => {
       console.warn("⚠️ Force exit after timeout");
-      process.exit(1);
+      process.exitCode = 1;
     }, 10_000);
-
   } catch (err) {
     console.error("❌ Shutdown error:", err);
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
@@ -128,13 +126,18 @@ async function shutdown(signal) {
 // ------------------------
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-
-process.on("uncaughtException", err => {
+process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
   shutdown("uncaughtException");
 });
-
-process.on("unhandledRejection", reason => {
+process.on("unhandledRejection", (reason) => {
   console.error("❌ Unhandled Rejection:", reason);
   shutdown("unhandledRejection");
+});
+
+// ------------------------
+// Optional: WS Server error logging
+// ------------------------
+wsServer.wss.on("error", (err) => {
+  console.error("❌ WebSocket Server Error:", err);
 });
